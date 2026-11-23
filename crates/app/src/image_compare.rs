@@ -16,6 +16,9 @@ const MODES: [(Mode, &str); 3] = [
 ];
 /// The zoom choices, in their group's order; 0 fits the image.
 const ZOOMS: [(f32, &str); 4] = [(0., "Fit"), (0.5, "50%"), (1., "100%"), (2., "200%")];
+/// Width probe labels for the zoom menu trigger, including the widest pinch
+/// zoom label (`400%` / `888%`) so pinch-zooming never shifts sibling controls.
+const ZOOM_MENU_WIDTH_LABELS: [&str; 5] = ["Fit", "50%", "100%", "200%", "888%"];
 /// The pan's directions, in their group's order: each arrow's ID, its glyph,
 /// its name, which the Pan menu's item reads, and how far it moves the
 /// images.
@@ -564,10 +567,17 @@ impl GitTurtle {
             .iter()
             .find(|(mode, _)| *mode == state.mode)
             .map_or("Side by side", |(_, name)| *name);
-        let zoom_label = ZOOMS
+        let zoom_label: Cow<'static, str> = ZOOMS
             .iter()
             .find(|(zoom, _)| *zoom == self.zoom)
-            .map_or("Fit", |(_, name)| *name);
+            .map(|(_, name)| Cow::Borrowed(*name))
+            .unwrap_or_else(|| {
+                if self.zoom > 0. {
+                    Cow::Owned(format!("{:.0}%", self.zoom * 100.))
+                } else {
+                    Cow::Borrowed("Fit")
+                }
+            });
         // The forms the zooms and the pan take at this width: the pan never
         // takes a row of its own, and each form changes at one width.
         let adjust_line = adjust_line(window);
@@ -577,7 +587,7 @@ impl GitTurtle {
             modes: (!source).then_some(mode_group),
             zooms: [
                 group_width(&ZOOMS.map(|(_, name)| name), &ZOOM_GROUP, window),
-                widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window),
+                widest_menu(&ZOOM_MENU_WIDTH_LABELS, &WIDEST_ZOOM, window),
             ],
             pan: (!source).then(|| {
                 [
@@ -688,7 +698,7 @@ impl GitTurtle {
             crate::in_frame::probed(zooms, "image-zooms").into_any_element()
         } else {
             let current = self.zoom;
-            let label = zoom_label;
+            let label = zoom_label.as_ref();
             // Where not even the Pan menu fits beside it, the zoom menu
             // offers the pan's directions after the zooms.
             let pans = forms.pan == Some(Pan::InZoomMenu);
@@ -711,11 +721,7 @@ impl GitTurtle {
             // As wide as its widest choice, so choosing a zoom moves nothing
             // after it: "100%" once took the modes' row from a "Fit" that had
             // shared it, and the captions moved down a row.
-            .min_w(widest_menu(
-                &ZOOMS.map(|(_, name)| name),
-                &WIDEST_ZOOM,
-                window,
-            ))
+            .min_w(widest_menu(&ZOOM_MENU_WIDTH_LABELS, &WIDEST_ZOOM, window))
             .dropdown_caret(true)
             .tooltip(if pans {
                 format!("Zoom and pan · {scale}")
@@ -1611,6 +1617,33 @@ impl GitTurtle {
                 let delta = event.delta.pixel_delta(px(24.));
                 let pan = this.image_comparison.pan;
                 this.pan_image([pan[0] + f32::from(delta.x), pan[1] + f32::from(delta.y)]);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .on_pinch(cx.listener(|this, event: &PinchEvent, _, cx| {
+                if !event.delta.is_finite() || event.delta == 0. {
+                    return;
+                }
+                let bounds = this.image_comparison.bounds.size;
+                let viewport = [f32::from(bounds.width), f32::from(bounds.height)];
+                let fit = layout(
+                    viewport,
+                    this.image_geometry().extent,
+                    0.,
+                    this.image_comparison.pan,
+                )
+                .0;
+                let fit_scale = if fit > 0. && fit.is_finite() {
+                    fit
+                } else {
+                    1.0
+                };
+                let base_scale = if this.zoom > 0. { this.zoom } else { fit_scale };
+                let min_zoom = fit_scale.clamp(0.05, 0.25);
+                let factor = (1.0 + event.delta).clamp(0.5, 2.0);
+                this.zoom = (base_scale * factor).clamp(min_zoom, 4.0);
+                let pan = this.image_comparison.pan;
+                this.pan_image(pan);
                 cx.stop_propagation();
                 cx.notify();
             }))
@@ -4222,8 +4255,8 @@ pub(crate) mod note_tests {
 #[cfg(all(test, target_os = "linux"))]
 mod render_tests {
     use super::{
-        MODE_GROUP, MODE_MENU, MODES, PAN_MENU, WIDEST_ZOOM, ZOOMS, group_width, menu_width,
-        widest_menu,
+        MODE_GROUP, MODE_MENU, MODES, PAN_MENU, WIDEST_ZOOM, ZOOM_MENU_WIDTH_LABELS, ZOOMS,
+        group_width, menu_width, widest_menu,
     };
     use crate::views::tests::{draw, history_window_from, settle};
     use crate::*;
@@ -4473,7 +4506,7 @@ mod render_tests {
                 let gap = window.rem_size() * 0.5;
                 let inset = appearance::ui_size(crate::ICON_INSET);
                 let mode = widest_menu(&MODES.map(|(_, name)| name), &MODE_MENU, window);
-                let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
+                let zoom = widest_menu(&ZOOM_MENU_WIDTH_LABELS, &WIDEST_ZOOM, window);
                 (gap, window.rem_size(), mode - inset + gap + zoom)
             });
             let room = |width: f32, cx: &mut VisualTestContext| {
@@ -5036,7 +5069,7 @@ mod render_tests {
         let (rem, row) = cx.update(|window, _| {
             let gap = window.rem_size() * 0.5;
             let modes = group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window);
-            let zoom = widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window);
+            let zoom = widest_menu(&ZOOM_MENU_WIDTH_LABELS, &WIDEST_ZOOM, window);
             let pan = menu_width("Pan", &PAN_MENU, window);
             (window.rem_size(), modes + gap + zoom + gap + pan)
         });

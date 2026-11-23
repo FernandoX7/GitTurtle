@@ -1869,6 +1869,7 @@ impl GitTurtle {
                                                         || lower.contains("console")
                                                         || lower.contains("courier")
                                                         || lower.contains("menlo")
+                                                        || lower.contains("monaco")
                                                         || lower.contains("sf mono")
                                                         || lower.contains("fira")
                                                         || lower.contains("jetbrains")
@@ -1876,6 +1877,11 @@ impl GitTurtle {
                                                         || lower.contains("hack")
                                                         || lower.contains("cascadia")
                                                         || lower.contains("inconsolata")
+                                                        || lower.contains("meslo")
+                                                        || lower.contains("berkeley")
+                                                        || lower.contains("victor")
+                                                        || lower.contains("commit")
+                                                        || lower.contains("maple")
                                                         || lower.contains("nerd")
                                                 })
                                                 .cloned()
@@ -3664,6 +3670,34 @@ impl GitTurtle {
                         )),
                     ),
             )
+            .when(cfg!(target_os = "macos"), |col| {
+                let accent_focus = self.page_focus("use-system-accent", cx);
+                col.child(
+                    div()
+                        .on_children_prepainted(
+                            self.keep_in_view(vec![Some(accent_focus.clone())], cx),
+                        )
+                        .debug_selector(|| "use-system-accent-switch".into())
+                        .child(
+                            switch_row(
+                                "use-system-accent",
+                                "Use macOS accent color",
+                                "Use macOS accent color",
+                                "Match your macOS System Settings accent color, fitted to GitTurtle's readability rules.",
+                                &[],
+                                cx,
+                            )
+                            .track_focus(&accent_focus)
+                            .checked(self.settings.system_accent)
+                            .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                this.settings.system_accent = *checked;
+                                crate::appearance::sync_macos_system_accent(cx);
+                                this.apply_appearance(window, cx);
+                                this.save_preferences(window, cx);
+                            })),
+                        ),
+                )
+            })
             .child(self.render_theme_picker(theme_columns, cx))
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
@@ -3700,7 +3734,19 @@ impl GitTurtle {
             .into_any_element();
 
         let save_editor = self.page_focus("save-external-editor", cx);
+        let macos_terminals = if cfg!(target_os = "macos") {
+            crate::platform_polish::detected_macos_terminals()
+        } else {
+            &[]
+        };
+        let presets_focus =
+            (!macos_terminals.is_empty()).then(|| self.page_focus("macos-terminal-presets", cx));
         let save_terminal = self.page_focus("save-external-terminal", cx);
+        let mut terminal_focus = vec![Some(ui.terminal.focus_handle(cx))];
+        if let Some(focus) = &presets_focus {
+            terminal_focus.push(Some(focus.clone()));
+        }
+        terminal_focus.push(Some(save_terminal.clone()));
         let reopen_last = self.page_focus("settings-reopen-last", cx);
         let project_pane = self.page_focus("settings-project-pane", cx);
         let save_branch = self.page_focus("save-default-branch", cx);
@@ -3741,15 +3787,69 @@ impl GitTurtle {
                 .flex().flex_col().gap_2()
                 .child(setting_description("External terminal", if cfg!(target_os = "macos") { "Optional application name, such as Ghostty or iTerm. Leave empty to use Terminal." } else { "Optional executable name or path, such as ghostty or kitty. Leave empty to use xdg-terminal-exec or $TERMINAL." }, cx))
                 .child(div()
-                    .on_children_prepainted(self.keep_in_view(
-                        vec![Some(ui.terminal.focus_handle(cx)), Some(save_terminal.clone())],
-                        cx,
-                    ))
+                    .on_children_prepainted(self.keep_in_view(terminal_focus, cx))
                     .flex()
+                    .when(narrow && !macos_terminals.is_empty(), |row| {
+                        row.flex_wrap().justify_end()
+                    })
                     .items_center()
                     .gap_2()
-                    .child(div().debug_selector(|| "settings-terminal-field".into()).flex_1().min_w_0()
-                        .child(Input::new(&ui.terminal).aria_label("External terminal")))
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-terminal-field".into())
+                            .flex_1()
+                            .min_w(if narrow && !macos_terminals.is_empty() {
+                                appearance::ui_size(180.)
+                            } else {
+                                px(0.)
+                            })
+                            .child(Input::new(&ui.terminal).aria_label("External terminal")),
+                    )
+                    .when_some(presets_focus.as_ref(), |row, presets_focus| {
+                        let term_owner = cx.entity().downgrade();
+                        let current_term = self.settings.external_terminal.clone();
+                        row.child(
+                            Button::new("macos-terminal-presets")
+                                .track_focus(presets_focus)
+                                .debug_selector(|| "macos-terminal-presets".into())
+                                .label("Installed…")
+                                .dropdown_caret(true)
+                                .accessibility_label("Installed macOS terminals")
+                                .tooltip("Choose an installed macOS terminal application")
+                                .app_menu(move |mut menu, _, _| {
+                                    for &(label, value) in macos_terminals {
+                                        let checked = current_term.eq_ignore_ascii_case(value)
+                                            || (value.eq_ignore_ascii_case("iTerm")
+                                                && current_term.eq_ignore_ascii_case("iTerm2"))
+                                            || (value.eq_ignore_ascii_case("Terminal")
+                                                && current_term.trim().is_empty());
+                                        let o = term_owner.clone();
+                                        menu = menu.item(
+                                            gpui_kit::component::menu::PopupMenuItem::new(label)
+                                                .checked(checked)
+                                                .on_click(move |_, window, cx| {
+                                                    let _ = o.update(cx, |this, cx| {
+                                                        this.settings.external_terminal =
+                                                            value.to_owned();
+                                                        if let Some(ui) = &this.settings_ui {
+                                                            ui.terminal.update(
+                                                                cx,
+                                                                |input, cx| {
+                                                                    input.set_value(
+                                                                        value, window, cx,
+                                                                    );
+                                                                },
+                                                            );
+                                                        }
+                                                        this.save_preferences(window, cx);
+                                                    });
+                                                }),
+                                        );
+                                    }
+                                    menu
+                                }),
+                        )
+                    })
                     .child(Button::new("save-external-terminal")
                         .track_focus(&save_terminal)
                         .debug_selector(|| "save-external-terminal".into())

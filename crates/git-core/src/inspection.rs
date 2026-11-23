@@ -988,6 +988,7 @@ fn verify_openpgp_local(
     let sig_path = temp.path().join("commit.sig");
     std::fs::write(&sig_path, signature.as_bytes())?;
     let mut cmd = Command::new(resolve_gpg_binary());
+    crate::apply_platform_path(&mut cmd);
     cmd.args([
         "--batch",
         "--no-tty",
@@ -1185,6 +1186,7 @@ fn verify_ssh_local(
     std::fs::write(&sig_path, signature.as_bytes())?;
 
     let mut find = Command::new("ssh-keygen");
+    crate::apply_platform_path(&mut find);
     find.args(["-Y", "find-principals", "-f"])
         .arg(&allowed_path)
         .arg("-s")
@@ -1235,6 +1237,7 @@ fn verify_ssh_local(
         });
     };
     let mut verify = Command::new("ssh-keygen");
+    crate::apply_platform_path(&mut verify);
     verify
         .args(["-Y", "verify", "-f"])
         .arg(&allowed_path)

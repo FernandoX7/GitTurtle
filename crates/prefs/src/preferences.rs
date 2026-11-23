@@ -336,6 +336,9 @@ pub struct AppSettings {
     /// theme is stored as `{"custom": id}`.
     pub theme: ThemeSelection,
     pub follow_system: bool,
+    /// macOS: tint the active theme's accent controls with the macOS system
+    /// accent color (`NSColor.controlAccentColor`), fitted to contrast rules.
+    pub system_accent: bool,
     pub external_editor: String,
     pub external_terminal: String,
     pub columns: ColumnSettings,
@@ -379,6 +382,7 @@ impl Default for AppSettings {
         Self {
             theme: ThemeSelection::default(),
             follow_system: false,
+            system_accent: false,
             external_editor: String::new(),
             external_terminal: String::new(),
             columns: ColumnSettings::default(),
@@ -622,6 +626,68 @@ impl CommitDraft {
     }
 }
 
+/// Persisted main window geometry, display identity, and zoom/fullscreen state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    pub display_uuid: Option<String>,
+}
+
+impl Default for WindowGeometry {
+    fn default() -> Self {
+        Self {
+            x: 0.,
+            y: 0.,
+            width: 1480.,
+            height: 980.,
+            maximized: false,
+            fullscreen: false,
+            display_uuid: None,
+        }
+    }
+}
+
+impl WindowGeometry {
+    /// Clamps persisted dimensions and coordinates into safe finite ranges so
+    /// corrupt or extreme values can never open an unusable or off-bounds window.
+    pub fn sanitized(&self) -> Option<Self> {
+        if !self.x.is_finite()
+            || !self.y.is_finite()
+            || !self.width.is_finite()
+            || !self.height.is_finite()
+        {
+            return None;
+        }
+        let width = self.width.clamp(460., 16_384.);
+        let height = self.height.clamp(420., 16_384.);
+        let x = self.x.clamp(-32_768., 32_768.);
+        let y = self.y.clamp(-32_768., 32_768.);
+        let display_uuid = self
+            .display_uuid
+            .as_ref()
+            .map(|id| id.trim())
+            .filter(|id| {
+                !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_graphic())
+            })
+            .map(str::to_owned);
+        Some(Self {
+            x,
+            y,
+            width,
+            height,
+            maximized: self.maximized,
+            fullscreen: self.fullscreen,
+            display_uuid,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Preferences {
     pub recent_repositories: Vec<PathBuf>,
@@ -634,6 +700,8 @@ pub struct Preferences {
     pub project_library: ProjectLibrary,
     /// User-authored themes, in saved order. Empty for stores before version 6.
     pub custom_themes: Vec<CustomTheme>,
+    /// Last saved main window geometry and display identity, if recorded.
+    pub window_geometry: Option<WindowGeometry>,
 }
 
 /// `Themes` is the saved section's type. Only a failed load reads the store
@@ -654,6 +722,8 @@ struct StoredPreferences<Themes = StoredCustomThemes> {
     project_library: Vec<StoredNode>,
     #[serde(default)]
     custom_themes: Themes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window_geometry: Option<WindowGeometry>,
 }
 
 /// The saved `custom_themes` section. Reading keeps at most one entry past
@@ -984,6 +1054,32 @@ impl Preferences {
         Self::save_settings_at(settings, &settings_path()?)
     }
 
+    /// Persist window bounds, maximized/fullscreen state, and display identity
+    /// on the serialized preference executor without overwriting concurrent
+    /// edits to other preference sections.
+    pub fn save_window_geometry(geometry: &WindowGeometry) -> Result<Self> {
+        Self::save_window_geometry_at(geometry, &settings_path()?)
+    }
+
+    fn save_window_geometry_at(geometry: &WindowGeometry, settings: &Path) -> Result<Self> {
+        let mut next = Self::load_for_write(settings)?;
+        next.window_geometry = geometry.sanitized();
+        next.save_to(settings)?;
+        Ok(next)
+    }
+
+    /// Clear the saved recent-repositories list (used by macOS File → Open Recent → Clear Menu).
+    pub fn clear_recent_repositories() -> Result<Self> {
+        Self::clear_recent_repositories_at(&settings_path()?)
+    }
+
+    fn clear_recent_repositories_at(settings: &Path) -> Result<Self> {
+        let mut next = Self::load_for_write(settings)?;
+        next.recent_repositories.clear();
+        next.save_to(settings)?;
+        Ok(next)
+    }
+
     /// Save or clear one project's display name. `None` restores the folder
     /// name. This runs on the serialized preference executor beside recents,
     /// and merges into the latest stored file rather than a UI snapshot.
@@ -1175,6 +1271,10 @@ impl Preferences {
                 .collect(),
             project_names,
             custom_themes,
+            window_geometry: stored
+                .window_geometry
+                .as_ref()
+                .and_then(WindowGeometry::sanitized),
         })
     }
 
@@ -1228,6 +1328,7 @@ impl Preferences {
             project_names: current.project_names,
             project_library,
             custom_themes: current.custom_themes,
+            window_geometry: current.window_geometry,
         };
         next.save_to(settings)?;
         *self = next;
@@ -1278,6 +1379,10 @@ impl Preferences {
                     })
                     .collect()
             },
+            window_geometry: self
+                .window_geometry
+                .as_ref()
+                .and_then(WindowGeometry::sanitized),
         };
         let mut bytes = serde_json::to_vec_pretty(&stored)?;
         bytes.push(b'\n');
@@ -3943,5 +4048,52 @@ mod tests {
         let clone_cmd = dup.custom_commands[0].clone();
         dup.custom_commands.push(clone_cmd);
         assert!(dup.validate().is_err());
+    }
+
+    #[test]
+    fn window_geometry_system_accent_and_clear_recents_round_trip() {
+        let dir = TestDirectory::new();
+        let path = dir.0.join("preferences.json");
+        let repo = dir.0.join("repo");
+        fs::create_dir(&repo).unwrap();
+
+        let mut prefs = Preferences::default();
+        prefs.remember_at(&repo, &path).unwrap();
+        assert_eq!(prefs.recent_repositories.len(), 1);
+
+        let settings = AppSettings {
+            system_accent: true,
+            ..AppSettings::default()
+        };
+        Preferences::save_settings_at(&settings, &path).unwrap();
+
+        let geom = WindowGeometry {
+            x: 120.,
+            y: 80.,
+            width: 1600.,
+            height: 960.,
+            maximized: false,
+            fullscreen: true,
+            display_uuid: Some("12345678-1234-1234-1234-123456789abc".into()),
+        };
+        Preferences::save_window_geometry_at(&geom, &path).unwrap();
+
+        let loaded = Preferences::load_from(&path).unwrap();
+        assert!(loaded.settings.system_accent);
+        assert_eq!(loaded.window_geometry, Some(geom));
+        assert_eq!(loaded.recent_repositories.len(), 1);
+
+        // Non-finite geometry is dropped rather than poisoning the store.
+        let nan_geom = WindowGeometry {
+            x: f32::NAN,
+            ..WindowGeometry::default()
+        };
+        assert_eq!(nan_geom.sanitized(), None);
+
+        // Clearing recents preserves window geometry and settings.
+        let cleared = Preferences::clear_recent_repositories_at(&path).unwrap();
+        assert!(cleared.recent_repositories.is_empty());
+        assert!(cleared.settings.system_accent);
+        assert!(cleared.window_geometry.is_some());
     }
 }

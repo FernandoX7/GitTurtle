@@ -1289,7 +1289,7 @@ fn model_canvas<T: 'static>(
     let wheel = document.clone();
     let wheel_partner = partner.clone();
     let key = document.clone();
-    let key_partner = partner;
+    let key_partner = partner.clone();
     let measured = document.clone();
     let has_frame = frame.is_some();
     div().id(("model-canvas",index)).flex_1().min_h_0().min_w_0().relative().overflow_hidden().bg(rgb(0x1c222a)).border_1().border_color(rgb(if ringed { colors.accent } else { colors.border }))
@@ -1325,6 +1325,19 @@ fn model_canvas<T: 'static>(
             let y=f32::from(event.delta.pixel_delta(px(24.)).y) as f64;
             wheel.change(wheel_partner.as_deref(),Action::Zoom((y*0.008).clamp(-0.7,0.7).exp()));window.refresh();cx.stop_propagation();cx.notify();
         }))
+        .on_pinch({
+            let (pinch, pinch_partner) = (document, partner);
+            cx.listener(move |_, event: &PinchEvent, window, cx| {
+                if !event.delta.is_finite() || event.delta == 0. {
+                    return;
+                }
+                let factor = f64::from(event.delta).clamp(-0.7, 0.7).exp();
+                pinch.change(pinch_partner.as_deref(), Action::Zoom(factor));
+                window.refresh();
+                cx.stop_propagation();
+                cx.notify();
+            })
+        })
         .on_key_down(cx.listener(move |_,event:&KeyDownEvent,window,cx|{
             if event.keystroke.modifiers.platform || event.keystroke.modifiers.control || event.keystroke.modifiers.alt {return;}
             let shift=event.keystroke.modifiers.shift;

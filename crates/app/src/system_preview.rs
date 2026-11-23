@@ -40,6 +40,8 @@ use std::{
 
 #[cfg(target_os = "linux")]
 mod launch;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
 #[cfg(target_os = "linux")]
 pub(crate) mod passive;
 #[cfg(target_os = "linux")]
@@ -1757,7 +1759,15 @@ pub(crate) fn init(cx: &mut gpui_kit::App) {
     .detach();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub(crate) fn init(cx: &mut gpui_kit::App) {
+    cx.on_app_quit(|_cx| async {
+        macos::close_on_quit();
+    })
+    .detach();
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn init(_cx: &mut gpui_kit::App) {}
 
 #[cfg(target_os = "linux")]

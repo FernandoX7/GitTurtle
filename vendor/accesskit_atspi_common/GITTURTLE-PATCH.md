@@ -75,14 +75,10 @@ parent changes, or focus moves onto or off it, in an update:
 change of a clipping ancestor alone, such as a fold a resized window moves
 across rows that stay where they lie, sends no event; a client sees the
 node's new state when it next reads it. That is an open item for the Orca
-check (`docs/native-accessibility.md`). macOS has no
-showing state and uses `accesskit_macos`, which this does not touch: there a
-node AccessKit keeps past a fold, which GitTurtle reports at its layout, has
-nothing marking it off screen, and VoiceOver's cursor may outline what lies
-there, as the GitHub panel's notice below its body's fold over Back to
-repository. That is an open item, not yet checked with VoiceOver; a list the
-window draws none of reports its pixel beyond a corner there too, so none of
-its rows is reachable.
+check (`docs/native-accessibility.md`). macOS has no showing state; matching
+clip bounds (`NSRect::ZERO` when wholly outside any clipping ancestor) and
+clipped hit-testing are maintained in `vendor/accesskit_macos`
+(`vendor/accesskit_macos/GITTURTLE-PATCH.md`).
 
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
@@ -102,8 +98,8 @@ its clipping ancestors leaves out the point (`clipped_at`, the same walk as
 passes over (`ExcludeNode`): its children are still tried, and the point
 finds what is drawn there, a sibling or the nearest ancestor that holds it.
 The extra work is that ancestor walk for each included node the hit test
-visits, only when a client asks for a point. macOS's hit test lives in
-`accesskit_macos` and is unchanged.
+visits, only when a client asks for a point. macOS's matching hit-test clip
+filter lives in `vendor/accesskit_macos`.
 
 Upstream status: not proposed upstream. It shares the off-screen change's
 ancestor walk (`clips`), which stays while either change does.

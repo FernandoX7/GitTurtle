@@ -887,10 +887,52 @@ impl ThemeSelectionExt for custom::ThemeSelection {
     }
 }
 
+/// Cached macOS system accent color (`NSColor.controlAccentColor` converted to sRGB `0xRRGGBB`).
+/// Updated at startup and on `NSSystemColorsDidChangeNotification`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MacSystemAccent(Option<u32>);
+impl Global for MacSystemAccent {}
+
+/// Reads the current macOS system accent color as sRGB `0xRRGGBB`.
+#[cfg(target_os = "macos")]
+fn read_macos_system_accent() -> Option<u32> {
+    objc2::rc::autoreleasepool(|_| {
+        use objc2_app_kit::{NSColor, NSColorSpace};
+        let accent = NSColor::controlAccentColor();
+        let srgb = accent.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
+        let channel = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let r = channel(srgb.redComponent());
+        let g = channel(srgb.greenComponent());
+        let b = channel(srgb.blueComponent());
+        Some((r << 16) | (g << 8) | b)
+    })
+}
+
+/// Refreshes the cached macOS system accent color in the GPUI global store.
+/// Returns whether the stored value changed.
+pub fn sync_macos_system_accent(cx: &mut App) -> bool {
+    #[cfg(target_os = "macos")]
+    let next = read_macos_system_accent();
+    #[cfg(not(target_os = "macos"))]
+    let next = None;
+    let current = cx.try_global::<MacSystemAccent>().and_then(|g| g.0);
+    if current == next {
+        return false;
+    }
+    cx.set_global(MacSystemAccent(next));
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn set_macos_system_accent_for_test(accent: Option<u32>, cx: &mut App) {
+    cx.set_global(MacSystemAccent(accent));
+}
+
 /// GPUI application helpers for [`custom::ResolvedTheme`].
 pub trait ResolvedThemeExt {
     fn apply(self, window: Option<&mut Window>, cx: &mut App);
     fn with_desktop(self, cx: &App) -> Self;
+    fn with_system_accent(self, enabled: bool, cx: &App) -> Self;
 }
 
 impl ResolvedThemeExt for custom::ResolvedTheme {
@@ -908,6 +950,13 @@ impl ResolvedThemeExt for custom::ResolvedTheme {
             let _ = cx;
             self
         }
+    }
+
+    fn with_system_accent(mut self, enabled: bool, cx: &App) -> Self {
+        if enabled && let Some(raw_accent) = cx.try_global::<MacSystemAccent>().and_then(|g| g.0) {
+            self.palette = gitturtle_theme::with_fitted_accent(self.palette, raw_accent);
+        }
+        self
     }
 }
 

@@ -1040,6 +1040,94 @@ struct WarmTab {
     document_restore: Option<Bookmark>,
 }
 
+/// Left padding of the repository tab strip: reserves clear space for the
+/// integrated macOS traffic lights when `TitlebarOptions::appears_transparent`
+/// is active outside fullscreen, and collapses back to standard `0.5 rem`
+/// (`px_2`) in fullscreen and on non-macOS platforms.
+pub(crate) fn titlebar_left_inset(window: &Window) -> Pixels {
+    if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        window.pixel_snap(px(78.))
+    } else {
+        window.pixel_snap(window.rem_size() * 0.5)
+    }
+}
+
+/// Vertical traffic-light origin matching `tab_strip_height` on macOS.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_traffic_light_origin(strip_height: Pixels) -> Point<Pixels> {
+    point(px(12.), ((strip_height - px(12.)) / 2.).max(px(8.)))
+}
+
+#[cfg(target_os = "macos")]
+struct MacTitlebarDrag {
+    armed: bool,
+    double_click_armed: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_titlebar_drag_backdrop(window: &mut Window, cx: &mut App) -> AnyElement {
+    let state = window.use_state(cx, |_, _| MacTitlebarDrag {
+        armed: false,
+        double_click_armed: false,
+    });
+    div()
+        .id("macos-titlebar-drag-backdrop")
+        .absolute()
+        .inset_0()
+        .on_mouse_down_out(window.listener_for(&state, |state, _, _, _| {
+            state.armed = false;
+            state.double_click_armed = false;
+        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            // Controls on the tab strip (tabs, close buttons, `+`, Workspaces)
+            // prevent default; ignore their presses so clicking, double-clicking,
+            // or drag-reordering tabs never triggers a window move or zoom.
+            window.listener_for(&state, |state, event: &MouseDownEvent, window, _| {
+                if window.default_prevented() {
+                    state.armed = false;
+                    state.double_click_armed = false;
+                    return;
+                }
+                if event.click_count == 2 {
+                    state.armed = false;
+                    state.double_click_armed = true;
+                } else {
+                    state.armed = event.click_count == 1;
+                    state.double_click_armed = false;
+                }
+            }),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            window.listener_for(&state, |state, _: &MouseUpEvent, window, _| {
+                let zoom = state.double_click_armed && !window.default_prevented();
+                state.armed = false;
+                state.double_click_armed = false;
+                if zoom {
+                    window.titlebar_double_click();
+                }
+            }),
+        )
+        .on_mouse_move(
+            window.listener_for(&state, |state, event: &MouseMoveEvent, window, cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    state.armed = false;
+                    state.double_click_armed = false;
+                    return;
+                }
+                if state.armed && !cx.has_active_drag() {
+                    state.armed = false;
+                    state.double_click_armed = false;
+                    gpui_kit::base::TextSelection::end(window, cx);
+                    cx.stop_active_drag(window);
+                    window.start_window_move();
+                }
+            }),
+        )
+        .into_any_element()
+}
+
 impl GitTurtle {
     fn tab_retained_bytes(&self) -> usize {
         history_bytes(&self.commits, &self.graph)
@@ -2904,8 +2992,15 @@ impl GitTurtle {
         let owner_window = window.window_handle().window_id();
         self.subscriptions.push(cx.on_window_closed(move |cx, id| {
             if id == owner_window
-                && let Ok(completion) =
-                    owner.update(cx, |this, cx| this.flush_session_for_shutdown(cx))
+                && let Ok(completion) = owner.update(cx, |this, cx| {
+                    // Never let closing a blank secondary window clobber the
+                    // primary window's saved repository tabs.
+                    if this.repository_tabs.tabs.is_empty() && cx.windows().len() > 1 {
+                        return None;
+                    }
+                    Some(this.flush_session_for_shutdown(cx))
+                })
+                && let Some(completion) = completion
             {
                 // Window-close observers run before its entities are released.
                 // Keep the actual save alive at app lifetime for delayed native
@@ -3861,20 +3956,40 @@ impl GitTurtle {
             crate::views::LineKey::current(window),
             tab_label_insets(window),
         );
+        let strip_height = tab_strip_height(window, cx);
+        #[cfg(target_os = "macos")]
+        {
+            let traffic_light_cache = window.use_state(cx, |_, _| {
+                std::cell::Cell::new(None::<(Point<Pixels>, bool)>)
+            });
+            let origin = macos_traffic_light_origin(strip_height);
+            let key = (origin, window.is_fullscreen());
+            if traffic_light_cache.read(cx).get() != Some(key) {
+                traffic_light_cache.read(cx).set(Some(key));
+                window.set_traffic_light_position(origin);
+            }
+        }
         let strip =
             div()
                 .debug_selector(|| "repository-tab-strip".into())
+                .relative()
                 .flex()
                 .items_center()
                 // A ring's room between its controls, as between its tabs:
                 // the 0.25 rem left Main Menu's ring reaching into a selected
                 // first tab at 11 pt (`tab_gap`).
                 .gap(tab_gap(window))
-                .px_2()
-                .min_h(tab_strip_height(window, cx))
+                .pl(titlebar_left_inset(window))
+                .pr_2()
+                .min_h(strip_height)
                 .bg(rgb(colors.panel))
                 .border_b(TAB_STRIP_BORDER)
                 .border_color(rgb(colors.border))
+                .when(cfg!(target_os = "macos"), |strip| {
+                    #[cfg(target_os = "macos")]
+                    let strip = strip.child(macos_titlebar_drag_backdrop(window, cx));
+                    strip
+                })
                 .children(left_controls)
                 .when(cfg!(target_os = "linux"), |strip| {
                     #[cfg(target_os = "linux")]

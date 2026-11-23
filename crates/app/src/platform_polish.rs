@@ -399,6 +399,7 @@ impl Render for PrimaryMenu {
 /// menu would not follow it.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct MenuState {
+    has_window: bool,
     repository: bool,
     busy: Option<&'static str>,
     other_window_busy: bool,
@@ -406,6 +407,9 @@ pub(super) struct MenuState {
     workspace: bool,
     unsettled: bool,
     unavailable: bool,
+    has_tab: bool,
+    fullscreen: bool,
+    recent_signature: u64,
 }
 
 /// Browse Stashes… in the menu bar's View menu as the menus are built, as
@@ -435,14 +439,149 @@ impl StashesItem {
     }
 }
 
+/// Formats up to 10 recent repository paths into clean menu labels, adding a
+/// parent folder suffix only when two recent folders share the same display name.
+pub(super) fn recent_menu_labels(
+    recents: &[PathBuf],
+    project_names: &HashMap<PathBuf, String>,
+) -> Vec<String> {
+    let base_names: Vec<String> = recents
+        .iter()
+        .take(10)
+        .map(|path| {
+            let raw = project_names
+                .get(path)
+                .cloned()
+                .or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .filter(|n| !n.is_empty())
+                })
+                .unwrap_or_else(|| path.display().to_string());
+            let cleaned = crate::sanitize_single_line_display(&raw, 120);
+            if cleaned.is_empty() {
+                "Repository".to_owned()
+            } else {
+                cleaned
+            }
+        })
+        .collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for name in &base_names {
+        *counts.entry(name.as_str()).or_insert(0) += 1;
+    }
+    base_names
+        .iter()
+        .zip(recents.iter().take(10))
+        .map(|(name, path)| {
+            if counts.get(name.as_str()).copied().unwrap_or(0) > 1
+                && let Some(parent) = path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|p| crate::sanitize_single_line_display(&p.to_string_lossy(), 80))
+                    .filter(|p| !p.is_empty())
+            {
+                format!("{name} — {parent}")
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
+}
+
+/// Stable 64-bit hash of the recent-repository menu labels so `MenuState` and
+/// `DockMenuState` only rebuild native AppKit menus when entries actually change.
+pub(super) fn recent_labels_signature(labels: &[String]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    labels.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Maps index `0..10` to its typed recent-repository menu action.
+pub(super) fn recent_repository_action(index: usize) -> Option<Box<dyn Action>> {
+    match index {
+        0 => Some(Box::new(OpenRecentRepository0)),
+        1 => Some(Box::new(OpenRecentRepository1)),
+        2 => Some(Box::new(OpenRecentRepository2)),
+        3 => Some(Box::new(OpenRecentRepository3)),
+        4 => Some(Box::new(OpenRecentRepository4)),
+        5 => Some(Box::new(OpenRecentRepository5)),
+        6 => Some(Box::new(OpenRecentRepository6)),
+        7 => Some(Box::new(OpenRecentRepository7)),
+        8 => Some(Box::new(OpenRecentRepository8)),
+        9 => Some(Box::new(OpenRecentRepository9)),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct DockMenuState {
+    signature: u64,
+    busy: bool,
+    installed: bool,
+}
+impl Global for DockMenuState {}
+
+/// Updates the macOS Dock menu with recent repositories and quick window/open
+/// commands, deduplicated against the last installed state so `MacPlatform`'s
+/// internal menu action vector does not grow across frames.
+pub(super) fn update_dock_menu(labels: &[String], busy: bool, cx: &mut App) {
+    let signature = recent_labels_signature(labels);
+    if let Some(current) = cx.try_global::<DockMenuState>()
+        && current.installed
+        && current.signature == signature
+        && current.busy == busy
+    {
+        return;
+    }
+    cx.set_global(DockMenuState {
+        signature,
+        busy,
+        installed: true,
+    });
+    let mut items: Vec<MenuItem> = Vec::new();
+    for (index, label) in labels.iter().take(10).enumerate() {
+        if let Some(act) = recent_repository_action(index) {
+            items.push(MenuItem::Action {
+                name: label.clone().into(),
+                action: act,
+                os_action: None,
+                checked: false,
+                disabled: busy,
+            });
+        }
+    }
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
+    items.push(MenuItem::Action {
+        name: "Open Repository…".into(),
+        action: Box::new(OpenRepository),
+        os_action: None,
+        checked: false,
+        disabled: busy,
+    });
+    items.push(MenuItem::action("New Window", NewWindow));
+    cx.set_dock_menu(items);
+}
+
 /// The native menus, built for `state` ([`MenuState`]), Browse Stashes…
-/// as `stashes` stands.
-pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
+/// as `stashes` stands, and `recent_labels` populating File → Open Recent.
+pub(super) fn menus(
+    state: MenuState,
+    stashes: StashesItem,
+    recent_labels: &[String],
+    cx: &mut App,
+) {
     let MenuState {
+        has_window,
         repository,
         busy,
         other_window_busy,
         projects_refused,
+        has_tab,
+        fullscreen,
         ..
     } = state;
     let busy = busy.is_some();
@@ -454,6 +593,26 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
         checked: false,
         disabled: !enabled,
     };
+    let mut recent_items: Vec<MenuItem> = Vec::new();
+    for (index, label) in recent_labels.iter().take(10).enumerate() {
+        if let Some(act) = recent_repository_action(index) {
+            recent_items.push(action(label, act, !busy));
+        }
+    }
+    if recent_items.is_empty() {
+        recent_items.push(action(
+            "No Recent Repositories",
+            Box::new(NoRecentRepositories),
+            false,
+        ));
+    } else {
+        recent_items.push(MenuItem::separator());
+        recent_items.push(action(
+            "Clear Menu",
+            Box::new(ClearRecentRepositories),
+            !any_busy,
+        ));
+    }
     cx.set_menus(vec![
         Menu::new("GitTurtle").items([
             MenuItem::action("About GitTurtle", ShowAbout),
@@ -469,9 +628,14 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
             action("Quit GitTurtle", Box::new(Quit), !any_busy),
         ]),
         Menu::new("File").items([
+            MenuItem::action("New Window", NewWindow),
+            action("New Tab", Box::new(NewTab), !busy),
             action("Open Repository…", Box::new(OpenRepository), !busy),
+            MenuItem::Submenu(Menu::new("Open Recent").items(recent_items)),
             action("Projects…", Box::new(ShowProjects), !projects_refused),
-            action("Close Window", Box::new(CloseWindow), !busy),
+            MenuItem::separator(),
+            action("Close Tab", Box::new(CloseRepositoryTab), has_tab && !busy),
+            action("Close Window", Box::new(CloseWindow), has_window && !busy),
             MenuItem::separator(),
             action(
                 if cfg!(target_os = "macos") {
@@ -494,8 +658,8 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
             ),
         ]),
         Menu::new("Edit").items([
-            MenuItem::action("Undo", Undo),
-            MenuItem::action("Redo", Redo),
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
             MenuItem::separator(),
             // Standard selectors reach Cocoa file-panel fields first; GPUI's
             // native delegate retains these same actions as its fallback.
@@ -503,9 +667,18 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
             MenuItem::os_action("Copy", Copy, OsAction::Copy),
             MenuItem::os_action("Paste", Paste, OsAction::Paste),
             MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+            MenuItem::separator(),
+            MenuItem::Submenu(Menu::new("Find").items([
+                action(
+                    "Find in Comparison…",
+                    Box::new(FindInComparison),
+                    repository,
+                ),
+                action("Search Commits…", Box::new(Search), repository),
+            ])),
         ]),
         Menu::new("View").items([
-            MenuItem::action("Command Palette…", ShowCommandPalette),
+            action("Command Palette…", Box::new(ShowCommandPalette), has_window),
             action("History", Box::new(ShowHistory), repository),
             action("Working Changes", Box::new(ShowChanges), repository),
             action(
@@ -525,7 +698,7 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
                 Box::new(BrowseStashes),
                 stashes == StashesItem::Offered,
             ),
-            MenuItem::action("GitTurtle Activity…", ShowActivity),
+            action("GitTurtle Activity…", Box::new(ShowActivity), has_window),
             action(
                 "Refresh Local State",
                 Box::new(Refresh),
@@ -534,12 +707,27 @@ pub(super) fn menus(state: MenuState, stashes: StashesItem, cx: &mut App) {
             MenuItem::separator(),
             action("Back", Box::new(BackHistory), repository),
             action("Toggle Sidebar", Box::new(ToggleSidebar), repository),
-            MenuItem::action("Toggle Project List", ToggleProjectPane),
-            MenuItem::action("Search Commits", Search),
+            action(
+                "Toggle Project List",
+                Box::new(ToggleProjectPane),
+                has_window,
+            ),
+            MenuItem::separator(),
+            action(
+                if fullscreen {
+                    "Exit Full Screen"
+                } else {
+                    "Enter Full Screen"
+                },
+                Box::new(ToggleFullScreen),
+                has_window,
+            ),
         ]),
         Menu::new("Window").items([
-            MenuItem::action("Minimize", MinimizeWindow),
-            MenuItem::action("Zoom", ZoomWindow),
+            action("Minimize", Box::new(MinimizeWindow), has_window),
+            action("Zoom", Box::new(ZoomWindow), has_window),
+            MenuItem::separator(),
+            action("Bring All to Front", Box::new(BringAllToFront), has_window),
         ]),
         Menu::new("Help").items([MenuItem::action("Keyboard Shortcuts", ShortcutHelp)]),
     ]);
@@ -568,9 +756,21 @@ impl GitTurtle {
     /// compares is a few fields, and the palette's reason, which clones the
     /// selection's scope, is read only as they change.
     pub(super) fn update_native_menus(&mut self, window: &Window, cx: &mut App) {
+        let recent_paths = self.hub.read(cx).recent().to_vec();
+        let recent_labels = recent_menu_labels(&recent_paths, &self.project_names);
         let mut state = self.menu_state();
         state.other_window_busy =
             crate::any_window_operation_busy_excluding(Some(window.window_handle()), cx);
+        state.fullscreen = window.is_fullscreen();
+        state.recent_signature = recent_labels_signature(&recent_labels);
+        if self.menu_state.map(|s| s.recent_signature) != Some(state.recent_signature) {
+            crate::update_cached_recent_repositories(recent_paths, recent_labels.clone(), cx);
+        }
+        update_dock_menu(
+            &recent_labels,
+            state.busy.is_some() || state.other_window_busy,
+            cx,
+        );
         if self.menu_state == Some(state) {
             return;
         }
@@ -585,7 +785,7 @@ impl GitTurtle {
             ),
             (Some(_), None) => StashesItem::Refused,
         };
-        menus(state, stashes, cx);
+        menus(state, stashes, &recent_labels, cx);
         self.menu_state = Some(state);
     }
 
@@ -594,6 +794,7 @@ impl GitTurtle {
     /// refused for, and every wait they state, are read from.
     pub(super) fn menu_state(&self) -> MenuState {
         MenuState {
+            has_window: true,
             repository: self.repository.is_some(),
             busy: self.operation_busy,
             other_window_busy: false,
@@ -601,6 +802,9 @@ impl GitTurtle {
             workspace: self.page == AppPage::Repository,
             unsettled: self.write_unsettled(),
             unavailable: self.shown_tab_unavailable(),
+            has_tab: self.repository_tabs.active.is_some(),
+            fullscreen: false,
+            recent_signature: 0,
         }
     }
 
@@ -1211,8 +1415,14 @@ impl LaunchEnvironment {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|home| home.is_absolute());
+        #[cfg(target_os = "macos")]
+        let path = Some(gitturtle_core::augmented_macos_path(
+            std::env::var_os("PATH").as_deref(),
+        ));
+        #[cfg(not(target_os = "macos"))]
+        let path = std::env::var_os("PATH");
         Self {
-            path: std::env::var_os("PATH"),
+            path,
             terminal: std::env::var_os("TERMINAL").filter(|value| !value.is_empty()),
             omarchy: std::iter::once(PathBuf::from("/usr/share/omarchy/bin"))
                 .chain(home.map(|home| home.join(".local/share/omarchy/bin")))
@@ -1322,6 +1532,7 @@ fn file_editor_command(
             && let Some(program) = environment.find(cli)
         {
             let mut command = std::process::Command::new(program);
+            gitturtle_core::apply_platform_path(&mut command);
             if use_goto {
                 command.arg("--goto").arg(with_colon(line));
             } else {
@@ -1444,6 +1655,79 @@ fn terminal_command(
     terminal_command_with("", path, environment)
 }
 
+/// Known macOS terminal applications probed once for the Settings preset picker.
+pub(super) fn detected_macos_terminals() -> &'static [(&'static str, &'static str)] {
+    #[cfg(target_os = "macos")]
+    {
+        static DETECTED: std::sync::OnceLock<Vec<(&'static str, &'static str)>> =
+            std::sync::OnceLock::new();
+        DETECTED.get_or_init(|| {
+            const CANDIDATES: &[(&str, &str, &[&str])] = &[
+                (
+                    "Terminal",
+                    "",
+                    &["/System/Applications/Utilities/Terminal.app"],
+                ),
+                ("Ghostty", "Ghostty", &["/Applications/Ghostty.app"]),
+                ("iTerm2", "iTerm", &["/Applications/iTerm.app"]),
+                ("Warp", "Warp", &["/Applications/Warp.app"]),
+                ("WezTerm", "WezTerm", &["/Applications/WezTerm.app"]),
+                ("Kitty", "kitty", &["/Applications/kitty.app"]),
+                ("Alacritty", "Alacritty", &["/Applications/Alacritty.app"]),
+            ];
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            CANDIDATES
+                .iter()
+                .filter(|(_, _, paths)| {
+                    paths.iter().any(|p| Path::new(p).exists())
+                        || home.as_ref().is_some_and(|h| {
+                            paths.iter().any(|p| {
+                                p.strip_prefix("/Applications/")
+                                    .is_some_and(|rel| h.join("Applications").join(rel).exists())
+                            })
+                        })
+                })
+                .map(|(label, value, _)| (*label, *value))
+                .collect()
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[]
+    }
+}
+
+/// Builds the macOS `/usr/bin/open` command for opening a repository folder in
+/// the configured terminal (normalizing common aliases and working-directory
+/// flags for Alacritty and Kitty).
+pub(super) fn macos_terminal_command(configured: &str, path: &Path) -> std::process::Command {
+    let trimmed = configured.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let mut command = std::process::Command::new("/usr/bin/open");
+    match lower.as_str() {
+        "" | "terminal" | "terminal.app" => {
+            command.args(["-a", "Terminal", "--"]).arg(path);
+        }
+        "iterm2" | "iterm2.app" | "iterm" | "iterm.app" => {
+            command.args(["-a", "iTerm", "--"]).arg(path);
+        }
+        "alacritty" | "alacritty.app" => {
+            command
+                .args(["-na", "Alacritty", "--args", "--working-directory"])
+                .arg(path);
+        }
+        "kitty" | "kitty.app" => {
+            command
+                .args(["-na", "kitty", "--args", "--directory"])
+                .arg(path);
+        }
+        _ => {
+            command.args(["-a", trimmed, "--"]).arg(path);
+        }
+    }
+    command
+}
+
 fn terminal_command_with(
     configured: &str,
     path: &Path,
@@ -1451,14 +1735,7 @@ fn terminal_command_with(
 ) -> anyhow::Result<std::process::Command> {
     let configured = configured.trim();
     let mut command = if cfg!(target_os = "macos") {
-        let app = if configured.is_empty() {
-            "Terminal"
-        } else {
-            configured
-        };
-        let mut command = std::process::Command::new("/usr/bin/open");
-        command.args(["-a", app, "--"]).arg(path);
-        command
+        macos_terminal_command(configured, path)
     } else if !configured.is_empty() {
         std::process::Command::new(configured)
     } else if let Some(program) = environment.find("xdg-terminal-exec") {
@@ -2644,5 +2921,53 @@ mod about_tests {
             cx.update(|window, cx| window.has_active_dialog(cx)),
             "ShowAbout must open the About dialog"
         );
+    }
+
+    #[test]
+    fn macos_terminal_command_handles_aliases_alacritty_kitty_and_defaults() {
+        let repo = std::path::Path::new("/tmp/sample-repo");
+        let args_of = |configured: &str| -> Vec<String> {
+            macos_terminal_command(configured, repo)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args_of(""),
+            vec!["-a", "Terminal", "--", "/tmp/sample-repo"]
+        );
+        assert_eq!(
+            args_of("iTerm2"),
+            vec!["-a", "iTerm", "--", "/tmp/sample-repo"]
+        );
+        assert_eq!(
+            args_of("Ghostty"),
+            vec!["-a", "Ghostty", "--", "/tmp/sample-repo"]
+        );
+        assert_eq!(
+            args_of("Alacritty"),
+            vec![
+                "-na",
+                "Alacritty",
+                "--args",
+                "--working-directory",
+                "/tmp/sample-repo"
+            ]
+        );
+        assert_eq!(
+            args_of("kitty"),
+            vec!["-na", "kitty", "--args", "--directory", "/tmp/sample-repo"]
+        );
+    }
+
+    #[test]
+    fn recent_menu_labels_disambiguates_duplicates_and_strips_bidi() {
+        let recents = vec![
+            PathBuf::from("/work/alpha/app"),
+            PathBuf::from("/personal/beta/app"),
+            PathBuf::from("/work/unique\u{202e}repo"),
+        ];
+        let labels = recent_menu_labels(&recents, &HashMap::new());
+        assert_eq!(labels, vec!["app — alpha", "app — beta", "uniquerepo"]);
     }
 }

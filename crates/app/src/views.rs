@@ -35,6 +35,7 @@ impl gpui_kit::base::RootPlugin for WindowActionHost {
             .size_full()
             .key_context("GitTurtle")
             .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
+            .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(move |_: &CloseWindow, window, cx| {
                 if app_close.read(cx).operation_busy.is_none() {
                     window.remove_window();
@@ -7079,7 +7080,8 @@ impl GitTurtle {
             (px(0.), px(0.))
         };
         body_size(window).width
-            - window.pixel_snap(rem * 0.5) * 2.
+            - crate::repository_tabs::titlebar_left_inset(window)
+            - window.pixel_snap(rem * 0.5)
             - decorations
             - menu
             - (gap + control)
@@ -11762,6 +11764,7 @@ impl Render for GitTurtle {
         self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);
         self.update_native_menus(window, cx);
+        self.sync_window_chrome_metadata(window);
         let chrome = self.chrome(window, cx);
         self.hide_tooltip_on_page_change(window, cx);
         let page = match self.page {
@@ -12347,12 +12350,94 @@ impl Render for GitTurtle {
                 this.switch_repository_tab(7, window, cx)
             }))
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &ToggleFullScreen, window, _| window.toggle_fullscreen()))
             .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
                 if this.operation_busy.is_none() {
                     window.remove_window();
                 }
             }))
             .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository0, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(0, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository1, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(1, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository2, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(2, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository3, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(3, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository4, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(4, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository5, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(5, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository6, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(6, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository7, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(7, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository8, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(8, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenRecentRepository9, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.open_recent_repository_index(9, window, cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &ClearRecentRepositories, window, cx| {
+                    if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                        this.clear_recent_repositories(window, cx);
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| {
+                    if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                        this.navigate_back(window, cx);
+                    }
+                }),
+            )
+            .drag_over::<ExternalPaths>(|style, _, _, _| style)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_external_paths(paths.paths(), window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &ShowProjects, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     native_accessibility::dismiss_menus_for_overlay(window, cx);
@@ -12386,6 +12471,12 @@ impl Render for GitTurtle {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     native_accessibility::dismiss_menus_for_overlay(window, cx);
                     this.choose_repository(action, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    native_accessibility::dismiss_menus_for_overlay(window, cx);
+                    this.choose_repository(&OpenRepository, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, action: &Refresh, window, cx| {

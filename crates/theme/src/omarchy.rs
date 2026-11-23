@@ -853,6 +853,85 @@ fn fit_on_tiles(colors: &Colors, tiles: &[u32]) -> Palette {
     palette
 }
 
+/// Fits an external system accent color (for example macOS `NSColor.controlAccentColor`)
+/// into `palette` while preserving GitTurtle's WCAG/OKLab contrast guarantees across all
+/// surfaces, the hovered selected row, `removed_background`, `accent_foreground`, and
+/// `accent_hover` / `accent_active`.
+pub fn fit_system_accent(mut palette: Palette, raw_accent: u32) -> Palette {
+    let judge = Judge {
+        dark: !palette.is_light(),
+    };
+    let monochrome = oklch(raw_accent).0 < DIFF_MIN_CHROMA;
+    let surface_floor = if monochrome { 4.5 } else { ACCENT_CONTRAST };
+    let tiles: &[u32] = &[palette.removed_background];
+    let accepts_floor = |candidate: u32, floor: f64, margin: f64| {
+        let row = Palette {
+            accent: candidate,
+            ..palette
+        }
+        .row_hover(true);
+        let surfaces: &[u32] = &[
+            palette.canvas,
+            palette.panel,
+            palette.subtle,
+            palette.hover,
+            palette.selected,
+            row,
+        ];
+        judge.clears(
+            candidate,
+            &[(surfaces, floor), (tiles, ACCENT_CONTRAST)],
+            margin,
+        )
+    };
+    let fitted = if accepts_floor(raw_accent, surface_floor, 0.) {
+        raw_accent
+    } else {
+        let tuned = toward(raw_accent, judge.foreground_extreme(), |candidate| {
+            accepts_floor(candidate, surface_floor, CONTRAST_MARGIN)
+        });
+        if accepts_floor(tuned, surface_floor, CONTRAST_MARGIN) {
+            tuned
+        } else if monochrome {
+            let at_floor = toward(raw_accent, judge.foreground_extreme(), |candidate| {
+                accepts_floor(candidate, surface_floor, 0.)
+            });
+            if accepts_floor(at_floor, surface_floor, 0.) {
+                at_floor
+            } else {
+                toward(raw_accent, judge.foreground_extreme(), |candidate| {
+                    accepts_floor(candidate, ACCENT_CONTRAST, 0.)
+                })
+            }
+        } else {
+            let standard = toward(raw_accent, judge.foreground_extreme(), |candidate| {
+                accepts_floor(candidate, ACCENT_CONTRAST, CONTRAST_MARGIN)
+            });
+            if accepts_floor(standard, ACCENT_CONTRAST, CONTRAST_MARGIN) {
+                standard
+            } else {
+                toward(raw_accent, judge.foreground_extreme(), |candidate| {
+                    accepts_floor(candidate, ACCENT_CONTRAST, 0.)
+                })
+            }
+        }
+    };
+    let (accent, accent_foreground) = accent_label(judge, fitted, palette.canvas);
+    let surfaces = [
+        palette.canvas,
+        palette.panel,
+        palette.subtle,
+        palette.hover,
+        palette.selected,
+    ];
+    let (accent_hover, accent_active) = accent_states(accent, accent_foreground, &surfaces);
+    palette.accent = accent;
+    palette.accent_foreground = accent_foreground;
+    palette.accent_hover = accent_hover;
+    palette.accent_active = accent_active;
+    palette
+}
+
 /// The primary button's label: the canvas color when it reads on the accent, otherwise black
 /// or white. When neither reads with the margin, the accent moves away from the surfaces (which
 /// only raises its own contrast there) until the canvas side's extreme does.

@@ -924,6 +924,11 @@ impl GitTurtle {
 
     /// Quick Look's copy of captured `bytes`, suffixed from what they are
     /// with `name` as a hint; the task ends with whether it opened.
+    ///
+    /// Staging the private `0o700` / `0o400` file runs off the UI thread; on
+    /// macOS the staged file is presented on the main thread inside the
+    /// in-process `QLPreviewPanel` (falling back to `/usr/bin/qlmanage -p`
+    /// only if `QLPreviewPanel` is unavailable).
     #[cfg(not(target_os = "linux"))]
     pub(crate) fn quick_look(
         &mut self,
@@ -931,38 +936,70 @@ impl GitTurtle {
         name: PathBuf,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), crate::system_preview::NotOpened>> {
-        let response = self.preferences_writer.submit_read(move || {
-            #[cfg(target_os = "macos")]
-            let slot = ExternalPreviewSlot::reserve()?;
-            let (directory, path) = captured_copy(&bytes, &name)?;
-            #[cfg(target_os = "macos")]
-            {
-                let mut child = std::process::Command::new("/usr/bin/qlmanage")
-                    .arg("-p")
-                    .arg(&path)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()?;
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                    drop(directory);
-                    drop(slot);
-                });
-                Ok(())
+        let title = quick_look_display_title(&name);
+        let response = self
+            .preferences_writer
+            .submit_read(move || captured_copy(&bytes, &name));
+        cx.spawn(async move |_, cx| match response.await {
+            Ok(Ok((directory, path))) => {
+                #[cfg(target_os = "macos")]
+                {
+                    match crate::system_preview::macos::present(directory, path, &title) {
+                        Ok(()) => Ok(()),
+                        Err((directory, path)) => {
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let slot = ExternalPreviewSlot::reserve()
+                                        .map_err(|error| format!("{error:#}"))?;
+                                    let mut child = std::process::Command::new("/usr/bin/qlmanage")
+                                        .arg("-p")
+                                        .arg(&path)
+                                        .stdin(std::process::Stdio::null())
+                                        .stdout(std::process::Stdio::null())
+                                        .stderr(std::process::Stdio::null())
+                                        .spawn()
+                                        .map_err(|error| format!("{error:#}"))?;
+                                    std::thread::spawn(move || {
+                                        let _ = child.wait();
+                                        drop(directory);
+                                        drop(slot);
+                                    });
+                                    Ok(())
+                                })
+                                .await
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    cx.background_executor()
+                        .spawn(async move {
+                            drop(directory);
+                        })
+                        .detach();
+                    let _ = (path, title);
+                    Err("System preview is not available on this platform".into())
+                }
             }
-            #[cfg(not(target_os = "macos"))]
-            {
-                drop(directory);
-                let _ = path;
-                anyhow::bail!("System preview is not available on this platform")
-            }
-        });
-        cx.spawn(async move |_, _| match response.await {
-            Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(format!("{error:#}").into()),
             Err(_) => Err("System preview stopped before reporting a result.".into()),
         })
+    }
+}
+
+/// Sanitizes a repository filename into a safe single-line display title for
+/// Quick Look (never placed on the filesystem).
+#[cfg(any(test, not(target_os = "linux")))]
+fn quick_look_display_title(name: &Path) -> String {
+    let raw = name
+        .file_name()
+        .map(|part| part.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cleaned = crate::sanitize_single_line_display(&raw, 180);
+    if cleaned.is_empty() {
+        "Captured revision".into()
+    } else {
+        cleaned
     }
 }
 
@@ -1813,5 +1850,17 @@ mod tests {
                 "{path}: the oversize side offers nothing"
             );
         }
+    }
+
+    #[test]
+    fn quick_look_display_title_strips_bidi_and_controls_and_falls_back() {
+        assert_eq!(
+            quick_look_display_title(Path::new("dir/report\u{202e}\n.pdf")),
+            "report.pdf"
+        );
+        assert_eq!(
+            quick_look_display_title(Path::new("/")),
+            "Captured revision"
+        );
     }
 }
