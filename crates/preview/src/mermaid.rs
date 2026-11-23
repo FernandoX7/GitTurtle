@@ -19,6 +19,13 @@ const MAX_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NODES: usize = 128;
 const MAX_EDGES: usize = 256;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MermaidTheme {
+    #[default]
+    Light,
+    Dark,
+}
+
 pub struct Diagram {
     pub source_line: usize,
     pub image: Option<ImagePreview>,
@@ -38,6 +45,18 @@ pub fn preview(
     source: &str,
     path: &Path,
     max_edge: u32,
+    check: impl Fn() -> Result<()>,
+) -> Result<Option<Document>> {
+    preview_with_theme(source, path, max_edge, MermaidTheme::Light, check)
+}
+
+/// Render bounded static Mermaid diagrams using either light or dark surface
+/// tokens so dark application palettes avoid stark white diagram backdrops.
+pub fn preview_with_theme(
+    source: &str,
+    path: &Path,
+    max_edge: u32,
+    theme: MermaidTheme,
     check: impl Fn() -> Result<()>,
 ) -> Result<Option<Document>> {
     check()?;
@@ -75,7 +94,7 @@ pub fn preview(
                 "Mermaid code fence is not closed; use Source to inspect the complete text."
             ))
         } else {
-            catch_unwind(AssertUnwindSafe(|| render(block, max_edge, &check)))
+            catch_unwind(AssertUnwindSafe(|| render(block, max_edge, theme, &check)))
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Mermaid renderer could not complete this diagram; literal source remains available.")))
         };
         check()?;
@@ -136,7 +155,33 @@ fn markdown_blocks(source: &str) -> Vec<(usize, &str, bool)> {
     blocks
 }
 
-fn render(source: &str, max_edge: u32, check: &impl Fn() -> Result<()>) -> Result<ImagePreview> {
+fn mermaid_theme(mode: MermaidTheme) -> Theme {
+    match mode {
+        MermaidTheme::Light => Theme::mermaid_default(),
+        MermaidTheme::Dark => {
+            let mut theme = Theme::dark();
+            theme.background = "#181b20".to_string();
+            theme.primary_color = "#232833".to_string();
+            theme.primary_text_color = "#e6edf3".to_string();
+            theme.text_color = "#e6edf3".to_string();
+            theme.primary_border_color = "#5a667a".to_string();
+            theme.line_color = "#9aa7ba".to_string();
+            theme.secondary_color = "#2a3140".to_string();
+            theme.tertiary_color = "#1f2530".to_string();
+            theme.cluster_background = "#1d222b".to_string();
+            theme.cluster_border = "#4a5568".to_string();
+            theme.edge_label_background = "#1d222b".to_string();
+            theme
+        }
+    }
+}
+
+fn render(
+    source: &str,
+    max_edge: u32,
+    theme_mode: MermaidTheme,
+    check: &impl Fn() -> Result<()>,
+) -> Result<ImagePreview> {
     ensure!(
         source.len() <= MAX_DIAGRAM_BYTES,
         "Mermaid diagram exceeds the 16 KiB source limit"
@@ -256,7 +301,7 @@ fn render(source: &str, max_edge: u32, check: &impl Fn() -> Result<()>) -> Resul
         "Mermaid linked nodes and callbacks are unavailable; use literal Source"
     );
     check()?;
-    let theme = Theme::mermaid_default();
+    let theme = mermaid_theme(theme_mode);
     let config = LayoutConfig {
         fast_text_metrics: true,
         ..LayoutConfig::default()
@@ -509,6 +554,34 @@ mod tests {
                 .error
                 .as_deref()
                 .is_some_and(|e| e.contains("linked nodes"))
+        );
+    }
+
+    #[test]
+    fn dark_mermaid_theme_renders_dark_surface_distinct_from_light() {
+        let diagram = "flowchart LR\nA[Start] --> B[End]\n";
+        let light = preview_with_theme(
+            diagram,
+            Path::new("d.mmd"),
+            300,
+            MermaidTheme::Light,
+            || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        let dark = preview_with_theme(diagram, Path::new("d.mmd"), 300, MermaidTheme::Dark, || {
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+        let light_img = light.diagrams[0].image.as_ref().expect("light image");
+        let dark_img = dark.diagrams[0].image.as_ref().expect("dark image");
+        assert_ne!(light_img.rgba, dark_img.rgba);
+        // Top-left corner pixel in dark theme should be dark, not stark white.
+        let (r, g, b) = (dark_img.rgba[0], dark_img.rgba[1], dark_img.rgba[2]);
+        assert!(
+            r < 64 && g < 64 && b < 64,
+            "dark Mermaid backdrop should be dark, got rgb({r},{g},{b})"
         );
     }
 }

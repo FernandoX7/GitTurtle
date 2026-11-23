@@ -430,6 +430,13 @@ fn confirmation_title(action: &Action) -> &'static str {
         Action::SetThreadResolved {
             resolved: false, ..
         } => "Confirm reopening the conversation",
+        Action::MergePull { .. } => "Confirm merging the pull request",
+        Action::SetPullState { open: false, .. } => "Confirm closing the pull request",
+        Action::SetPullState { open: true, .. } => "Confirm reopening the pull request",
+        Action::SetPullDraft { draft: true, .. } => "Confirm converting pull request to draft",
+        Action::SetPullDraft { draft: false, .. } => "Confirm marking pull request ready",
+        Action::UpdateLabels { .. } => "Confirm updating pull request labels",
+        Action::RequestReviewers { .. } => "Confirm requesting reviewers",
     }
 }
 
@@ -997,6 +1004,47 @@ impl Panel {
                         comment.body
                     ))
                     .collect::<String>()
+            ),
+            Action::MergePull {
+                pull,
+                method,
+                commit_title,
+                ..
+            } => format!(
+                "{} pull request #{}{}",
+                method.label(),
+                pull.number,
+                commit_title
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map_or_else(String::new, |t| format!("\n\n{t}"))
+            ),
+            Action::SetPullState { pull, open } => {
+                if *open {
+                    format!("Reopen pull request #{}", pull.number)
+                } else {
+                    format!("Close pull request #{}", pull.number)
+                }
+            }
+            Action::SetPullDraft { draft, .. } => if *draft {
+                "Convert pull request to draft"
+            } else {
+                "Mark pull request ready for review"
+            }
+            .into(),
+            Action::UpdateLabels { pull, labels } => format!(
+                "Set labels on pull request #{}: {}",
+                pull.number,
+                if labels.is_empty() {
+                    "(none)".to_owned()
+                } else {
+                    labels.join(", ")
+                }
+            ),
+            Action::RequestReviewers { pull, reviewers } => format!(
+                "Request reviewers on pull request #{}: {}",
+                pull.number,
+                reviewers.join(", ")
             ),
         };
         let focus = &self.conversations.confirm_focus;

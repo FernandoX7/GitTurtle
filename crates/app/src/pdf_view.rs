@@ -215,6 +215,33 @@ pub(crate) fn prepare_page(
     }
 }
 
+/// Searches captured PDF `bytes` for `query` off the UI thread, respecting
+/// bounded page/match limits and cancellation. On Linux the search runs inside
+/// GitTurtle's confined helper process (`GTPS`/`GTPR`); on macOS it uses
+/// PDFKit through `gitturtle_preview::search_pdf_text`.
+pub(crate) fn search_document(
+    bytes: &[u8],
+    query: &str,
+    check: &dyn Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<gitturtle_preview::PdfSearchReply> {
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        helper::client(bytes)
+            .search_text(bytes, query, check)
+            .map_err(helper::worded)
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    {
+        gitturtle_preview::search_pdf_text(bytes, query, check)
+    }
+}
+
 /// The Linux helper's client as the page view uses it.
 #[cfg(all(
     target_os = "linux",
@@ -441,6 +468,8 @@ pub(super) fn pause(content: Option<&Content>) {
 
 fn read_page_text(
     page: Arc<PreparedPage>,
+    document: Arc<Document>,
+    partner: Option<Arc<Document>>,
     label: &'static str,
     number: usize,
     window: &mut Window,
@@ -457,6 +486,8 @@ fn read_page_text(
     let height = (window.viewport_size().height * 0.6).min(px(640.));
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let return_focus = return_focus.clone();
+        let search_doc = document.clone();
+        let search_partner = partner.clone();
         let mut body = div()
             .flex()
             .flex_col()
@@ -480,21 +511,272 @@ fn read_page_text(
             .width(appearance::dialog_width(px(800.), window))
             .max_h(appearance::dialog_max_height(window))
             .child(body)
-            .footer(DialogFooter::new().child(
-                button("close-pdf-text", "Back to PDF", "", false).on_click(
-                    move |_, window, cx| {
+            .footer(
+                DialogFooter::new()
+                    .child({
+                        let saved_focus = return_focus.clone();
+                        button("open-pdf-search", "Search document…", "search", false).on_click(
+                            move |_, window, cx| {
+                                window.close_dialog(cx);
+                                search_document_dialog_with_focus(
+                                    search_doc.clone(),
+                                    search_partner.clone(),
+                                    label,
+                                    saved_focus.clone(),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )
+                    })
+                    .child(button("close-pdf-text", "Back to PDF", "", false).on_click(
+                        move |_, window, cx| {
+                            window.close_dialog(cx);
+                            if let Some(focus) = &return_focus {
+                                focus.focus(window, cx);
+                            }
+                            window.refresh();
+                        },
+                    )),
+            )
+    });
+    if let Some(focus) = focus {
+        window.on_next_frame(move |window, cx| focus.focus(window, cx));
+    }
+}
+
+#[derive(Default)]
+struct PdfSearchDialogState {
+    searching: bool,
+    status: String,
+    matches: Vec<gitturtle_preview::PdfSearchMatch>,
+    generation: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Opens a bounded multi-page text search dialog for `document` that runs
+/// extraction/matching off the UI thread and jumps directly to clicked pages.
+pub(crate) fn search_document_dialog(
+    document: Arc<Document>,
+    partner: Option<Arc<Document>>,
+    label: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let return_focus = window.focused(cx);
+    search_document_dialog_with_focus(document, partner, label, return_focus, window, cx);
+}
+
+fn search_document_dialog_with_focus(
+    document: Arc<Document>,
+    partner: Option<Arc<Document>>,
+    label: &'static str,
+    return_focus: Option<FocusHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search text across pages…"));
+    let max_pages = document.count.min(gitturtle_preview::MAX_PDF_SEARCH_PAGES);
+    let state = cx.new(|_| PdfSearchDialogState {
+        searching: false,
+        status: format!(
+            "Search up to {} (case-insensitive).",
+            crate::counted(max_pages, "page", "pages")
+        ),
+        matches: Vec::new(),
+        generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    });
+    let opened = input.clone();
+    let run_search = {
+        let document = document.clone();
+        let input = input.clone();
+        let state = state.clone();
+        Arc::new(move |window: &mut Window, cx: &mut App| {
+            let query = input.read(cx).value().trim().to_owned();
+            if query.is_empty() {
+                state.update(cx, |s, cx| {
+                    s.searching = false;
+                    s.matches.clear();
+                    s.status = "Enter text to search this PDF.".into();
+                    cx.notify();
+                });
+                window.refresh();
+                return;
+            }
+            let generation = state.update(cx, |s, cx| {
+                let next = s.generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+                s.searching = true;
+                s.matches.clear();
+                s.status = format!("Searching for “{query}”…");
+                cx.notify();
+                (Arc::clone(&s.generation), next)
+            });
+            window.refresh();
+            let bytes = Arc::clone(&document.bytes);
+            let (gen_counter, expected) = generation;
+            let receiver = renderer().submit_read(move || {
+                let check = || {
+                    anyhow::ensure!(
+                        gen_counter.load(Ordering::Acquire) == expected,
+                        "PDF search superseded"
+                    );
+                    Ok(())
+                };
+                search_document(&bytes, &query, &check)
+            });
+            let state_ref = state.downgrade();
+            let gen_check = state.read(cx).generation.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let result = receiver.await.unwrap_or_else(|_| {
+                        Err(anyhow::anyhow!("PDF search stopped unexpectedly."))
+                    });
+                    if gen_check.load(Ordering::Acquire) != expected {
+                        return;
+                    }
+                    let _ = cx.update(|window, cx| {
+                        let _ = state_ref.update(cx, |s, cx| {
+                            s.searching = false;
+                            match result {
+                                Ok(reply) => {
+                                    let matching_pages = reply.matches.len();
+                                    let total_hits: usize =
+                                        reply.matches.iter().map(|m| m.match_count).sum();
+                                    let scanned =
+                                        crate::counted(reply.pages_scanned, "page", "pages");
+                                    let mut note = if matching_pages == 0 {
+                                        format!("No matches found across {scanned}.")
+                                    } else {
+                                        format!(
+                                            "{} on {} (scanned {scanned})",
+                                            crate::counted(total_hits, "match", "matches"),
+                                            crate::counted(matching_pages, "page", "pages")
+                                        )
+                                    };
+                                    if reply.truncated {
+                                        note.push_str(" (limit reached)");
+                                    }
+                                    s.status = note;
+                                    s.matches = reply.matches;
+                                }
+                                Err(error) => {
+                                    s.matches.clear();
+                                    s.status = format!("Search unavailable: {error:#}");
+                                }
+                            }
+                            cx.notify();
+                        });
+                        window.refresh();
+                    });
+                })
+                .detach();
+        })
+    };
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
+        let colors = appearance::palette(cx);
+        let run_click = run_search.clone();
+        let run_enter = run_search.clone();
+        let close_focus = return_focus.clone();
+        let dismiss_focus = return_focus.clone();
+        let jump_focus = return_focus.clone();
+        let close_gen = state.read(cx).generation.clone();
+        let dismiss_gen = close_gen.clone();
+        let jump_gen = close_gen.clone();
+        let snapshot = state.read(cx);
+        let searching = snapshot.searching;
+        let status = snapshot.status.clone();
+        let matches = snapshot.matches.clone();
+        let mut results = div()
+            .id("pdf-search-results")
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1();
+        for (idx, found) in matches.into_iter().enumerate() {
+            let doc = document.clone();
+            let linked = partner.clone();
+            let focus = jump_focus.clone();
+            let gen_cancel = jump_gen.clone();
+            let page_num = found.page + 1;
+            let hit_word = crate::counted(found.match_count, "match", "matches");
+            let label_text = format!("Page {page_num} ({hit_word}) — {}", found.snippet);
+            let accessible = format!("Jump to page {page_num} ({hit_word}): {}", found.snippet);
+            results = results.child(
+                button(("pdf-search-hit", idx), label_text, "", false)
+                    .w_full()
+                    .accessibility_label(accessible)
+                    .on_click(move |_, window, cx| {
+                        gen_cancel.fetch_add(1, Ordering::AcqRel);
+                        doc.select(found.page, linked.as_deref());
                         window.close_dialog(cx);
-                        if let Some(focus) = &return_focus {
+                        if let Some(focus) = &focus {
+                            focus.focus(window, cx);
+                        }
+                        window.refresh();
+                    }),
+            );
+        }
+        dialog
+            .title(format!("{label} · Search PDF"))
+            .width(appearance::dialog_width(px(620.), window))
+            .max_h(appearance::dialog_max_height(window))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().child(
+                                Input::new(&input).aria_label(format!("{label}: PDF search query")),
+                            ))
+                            .child(
+                                button("run-pdf-search", "Search", "search", true)
+                                    .disabled(searching)
+                                    .on_click(move |_, window, cx| run_click(window, cx)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("pdf-search-status")
+                            .role(Role::Status)
+                            .aria_label(status.clone())
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(status),
+                    )
+                    .child(results),
+            )
+            .footer(DialogFooter::new().child(
+                crate::tags::dialog_cancel("close-pdf-search", "Close").on_click(
+                    move |_, window, cx| {
+                        close_gen.fetch_add(1, Ordering::AcqRel);
+                        window.close_dialog(cx);
+                        if let Some(focus) = &close_focus {
                             focus.focus(window, cx);
                         }
                         window.refresh();
                     },
                 ),
             ))
+            .on_cancel(move |_, window, cx| {
+                dismiss_gen.fetch_add(1, Ordering::AcqRel);
+                if let Some(focus) = &dismiss_focus {
+                    focus.focus(window, cx);
+                }
+                true
+            })
+            .on_ok(move |_, window, cx| {
+                run_enter(window, cx);
+                false
+            })
     });
-    if let Some(focus) = focus {
-        window.on_next_frame(move |window, cx| focus.focus(window, cx));
-    }
+    window.on_next_frame(move |window, cx| {
+        opened.update(cx, |input, cx| input.focus(window, cx));
+    });
 }
 
 fn page_picker(
@@ -1910,7 +2192,20 @@ pub(super) fn render_comparison<T: 'static>(
                 } else {
                     let read = |name: String| HeaderControl::new(("pdf-read-text",index), format!("pdf-read-text-{index}"), "Read page text", name, "file-text", slot).labelled_with_icon().button(line_room);
                     let read = match cached {
-                        Some(prepared) => read(read_name.clone()).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)),
+                        Some(prepared) => {
+                            let (doc, linked_partner) = (document, partner.clone());
+                            read(read_name.clone()).on_click(move |_, window, cx| {
+                                read_page_text(
+                                    prepared.clone(),
+                                    doc.clone(),
+                                    linked_partner.clone(),
+                                    label,
+                                    page + 1,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        }
                         None => preparing(read(format!("{read_name} · {PREPARING}")), index),
                     };
                     held.track_for(("pdf-read-text",index), std::slice::from_ref(&more_id), read, window, cx)
@@ -1996,6 +2291,7 @@ pub(super) fn render_comparison<T: 'static>(
             // The controls whose focus the menu takes as the form changes.
             let folded: Vec<ElementId> = if narrowest { zoom_controls.iter().cloned().chain([zoom_menu_id.clone()]).chain(page_controls.iter().cloned()).collect() } else { page_controls.to_vec() };
             let (cached, open) = (cached, open.clone());
+            let (more_doc, more_partner) = (document, partner.clone());
             let has_link = link.is_some();
             let (retry_page, flip_link) = (retry_page.clone(), flip_link.clone());
             let more = held.track_for(more_id.clone(), &folded, more, window, cx).app_menu(move |menu, _, _| {
@@ -2007,7 +2303,8 @@ pub(super) fn render_comparison<T: 'static>(
                     let retry_page = retry_page.clone();
                     PopupMenuItem::new("Retry page").accessibility_label(retry_name.clone()).on_click(move |_, window, cx| retry_page(window, cx))
                 } else if let Some(prepared) = cached.clone() {
-                    PopupMenuItem::new("Read page text").accessibility_label(read_name.clone()).on_click(move |_, window, cx| read_page_text(prepared.clone(), label, page+1, window, cx))
+                    let (doc, linked_partner) = (more_doc.clone(), more_partner.clone());
+                    PopupMenuItem::new("Read page text").accessibility_label(read_name.clone()).on_click(move |_, window, cx| read_page_text(prepared.clone(), doc.clone(), linked_partner.clone(), label, page+1, window, cx))
                 } else {
                     native_accessibility::detailed_item("Read page text", PREPARING).accessibility_label(format!("{read_name} · {PREPARING}"))
                 };

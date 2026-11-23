@@ -1465,6 +1465,23 @@ impl GitTurtle {
                     format!("{} · {}", stash.selector, stash.name),
                 )
             }
+            NavRow::Submodule(i) => {
+                let sub = &self.submodules[*i];
+                let path_str = sub.path.to_string_lossy();
+                (
+                    format!("{path_str} · {}", sub.state.label()),
+                    "folder",
+                    false,
+                    1,
+                    format!(
+                        "{} ({}) · {} · {}",
+                        sub.name,
+                        path_str,
+                        sub.state.label(),
+                        short_oid(&sub.index_oid)
+                    ),
+                )
+            }
             NavRow::Worktree(i) => {
                 let tree = &self.worktrees[*i];
                 (
@@ -1504,6 +1521,10 @@ impl GitTurtle {
         };
         let contextual_stash = match &row {
             NavRow::Stash(index) => Some(self.stashes[*index].clone()),
+            _ => None,
+        };
+        let contextual_submodule = match &row {
+            NavRow::Submodule(index) => Some(self.submodules[*index].clone()),
             _ => None,
         };
         let branch_owner = cx.entity().downgrade();
@@ -1600,6 +1621,28 @@ impl GitTurtle {
                         branch_owner.clone(),
                         branch_repository.clone(),
                         stash.clone(),
+                        wait,
+                    )
+                })
+                .built_from(built_key)
+                .follows_writes(cx.entity().downgrade())
+                .into_any_element()
+        } else if let Some(submodule) = contextual_submodule {
+            let built_key = (
+                submodule.path.clone(),
+                submodule.index_oid.clone(),
+                submodule.state,
+            );
+            element
+                .app_context_menu(move |menu, _, cx| {
+                    let wait = branch_owner
+                        .upgrade()
+                        .and_then(|owner| owner.read(cx).menu_wait());
+                    submodule_row_menu(
+                        menu,
+                        branch_owner.clone(),
+                        branch_repository.clone(),
+                        submodule.clone(),
                         wait,
                     )
                 })
@@ -1715,6 +1758,21 @@ impl GitTurtle {
                             owner.clone(),
                             repository.clone(),
                             stash.clone(),
+                            app.menu_wait(),
+                        )
+                    }),
+                )
+            }
+            Some(NavRow::Submodule(submodule)) => {
+                let submodule = self.submodules[*submodule].clone();
+                (
+                    1,
+                    Box::new(move |menu, app: &GitTurtle, _, _| {
+                        submodule_row_menu(
+                            menu,
+                            owner.clone(),
+                            repository.clone(),
+                            submodule.clone(),
                             app.menu_wait(),
                         )
                     }),
@@ -3151,7 +3209,63 @@ impl GitTurtle {
                         .child(date)
                         .children(font_probe("inspector-identifier")),
                 )
-                .child(parents),
+                .child(parents)
+                .children(
+                    self.commit_signature
+                        .as_ref()
+                        .filter(|(oid, _)| oid == &commit.oid)
+                        .map(|(_, sig)| {
+                            let (badge_label, raw_color) = match sig.trust {
+                                gitturtle_core::SignatureTrust::Good => {
+                                    (format!("Verified {}", sig.format.label()), colors.accent)
+                                }
+                                gitturtle_core::SignatureTrust::GoodUntrusted
+                                | gitturtle_core::SignatureTrust::ExpiredSignature
+                                | gitturtle_core::SignatureTrust::ExpiredKey
+                                | gitturtle_core::SignatureTrust::MissingKey
+                                | gitturtle_core::SignatureTrust::Unverified => (
+                                    format!("Signed ({} · unverified)", sig.format.label()),
+                                    colors.warning,
+                                ),
+                                gitturtle_core::SignatureTrust::Bad
+                                | gitturtle_core::SignatureTrust::RevokedKey => (
+                                    format!("Invalid {} signature", sig.format.label()),
+                                    colors.removed,
+                                ),
+                            };
+                            let color = colors.small_label(raw_color, &[colors.panel]);
+                            let mut tip_parts = vec![badge_label.clone()];
+                            if let Some(signer) = &sig.signer {
+                                tip_parts.push(format!("Signer: {signer}"));
+                            }
+                            if let Some(key) = &sig.key_id {
+                                tip_parts.push(format!("Key: {key}"));
+                            }
+                            tip_parts.push(sig.detail.clone());
+                            let tip = tip_parts.join("\n");
+                            let spoken = tip_parts.join(". ");
+                            native_accessibility::static_text(
+                                div()
+                                    .id("commit-signature-badge")
+                                    .debug_selector(|| "commit-signature-badge".into()),
+                                spoken,
+                            )
+                            .self_start()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(rgb(color))
+                            .text_size(appearance::ui_text(10.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(color))
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                    .build(window, cx)
+                            })
+                            .child(badge_label)
+                        }),
+                ),
         )
         .into_any_element()
     }
@@ -3570,7 +3684,8 @@ impl GitTurtle {
             TextMode::Unified => self.patch_editor.as_ref().map(ShownText::Editor),
             TextMode::Before => self.before_editor.as_ref().map(ShownText::Editor),
             TextMode::After => self.after_editor.as_ref().map(ShownText::Editor),
-            TextMode::Diagrams | TextMode::Markdown => None,
+            TextMode::Formatted => self.formatted_editor.as_ref().map(ShownText::Editor),
+            TextMode::Diagrams | TextMode::Markdown | TextMode::Table => None,
         }
     }
 
@@ -4141,6 +4256,8 @@ impl GitTurtle {
                     patch,
                     diagrams,
                     markdown,
+                    table,
+                    structured,
                     ..
                 } => {
                     let available = [
@@ -4153,16 +4270,24 @@ impl GitTurtle {
                         ),
                         (TextMode::Diagrams, "Diagrams"),
                         (TextMode::Markdown, "Rendered"),
+                        (TextMode::Table, "Table"),
+                        (TextMode::Formatted, "Formatted"),
                     ]
                     .into_iter()
                     .filter(|&(mode, _)| {
                         !((quick_source
                             && !matches!(
                                 mode,
-                                TextMode::After | TextMode::Diagrams | TextMode::Markdown
+                                TextMode::After
+                                    | TextMode::Diagrams
+                                    | TextMode::Markdown
+                                    | TextMode::Table
+                                    | TextMode::Formatted
                             ))
                             || (mode == TextMode::Diagrams && diagrams.is_none())
-                            || (mode == TextMode::Markdown && markdown.is_none()))
+                            || (mode == TextMode::Markdown && markdown.is_none())
+                            || (mode == TextMode::Table && table.is_none())
+                            || (mode == TextMode::Formatted && structured.is_none()))
                     })
                     .collect::<Vec<_>>();
                     let names = available.iter().map(|(_, name)| *name).collect::<Vec<_>>();
@@ -4318,10 +4443,14 @@ impl GitTurtle {
                         toolbar.child(crate::in_frame::probed(modes, "text-modes"))
                     };
                     let editor = match self.text_mode {
-                        TextMode::Split | TextMode::Diagrams | TextMode::Markdown => &None,
+                        TextMode::Split
+                        | TextMode::Diagrams
+                        | TextMode::Markdown
+                        | TextMode::Table => &None,
                         TextMode::Unified => &self.patch_editor,
                         TextMode::Before => &self.before_editor,
                         TextMode::After => &self.after_editor,
+                        TextMode::Formatted => &self.formatted_editor,
                     };
                     if self.text_mode == TextMode::Markdown {
                         self.markdown_view.as_ref().map_or_else(
@@ -4338,6 +4467,34 @@ impl GitTurtle {
                             },
                             |preview| self.render_rich_preview(preview, column, window, cx),
                         )
+                    } else if self.text_mode == TextMode::Table {
+                        table.as_ref().map_or_else(
+                            || {
+                                empty(
+                                    "No tabular preview",
+                                    "Use the source tabs to inspect this file.",
+                                )
+                            },
+                            |comparison| {
+                                crate::structured_view::render_tabular(
+                                    comparison,
+                                    quick_source,
+                                    colors,
+                                    &self.source_focus,
+                                    &self.tabular_scroll,
+                                    self.focus_ring.edge(&self.source_focus, rgb(colors.accent)),
+                                )
+                            },
+                        )
+                    } else if self.text_mode == TextMode::Formatted
+                        && let Some(structured) = structured
+                        && let Err(reason) = structured.display_text()
+                    {
+                        let title = format!("{} parse issue", structured.format.label());
+                        let detail = format!(
+                            "{reason}\n\nExact source and Git diff remain unchanged in the other tabs."
+                        );
+                        empty(&title, &detail)
                     } else if self.text_mode == TextMode::Split {
                         match &self.split_view {
                             Some(view) => {
@@ -4442,7 +4599,10 @@ impl GitTurtle {
         });
         let text_shown = matches!(self.content.as_deref(), Some(Content::Text { .. }))
             && !self.blame.is_visible()
-            && !matches!(self.text_mode, TextMode::Diagrams | TextMode::Markdown);
+            && !matches!(
+                self.text_mode,
+                TextMode::Diagrams | TextMode::Markdown | TextMode::Table | TextMode::Formatted
+            );
         let review_shown = text_shown && !quick_source;
         // Why a working file's lines cannot be staged one by one, beneath
         // its text.
@@ -5547,6 +5707,115 @@ fn stash_row_menu(
             PopupMenuItem::new("Copy stash name").on_click(move |_, window, cx| {
                 copy_feedback::copy(window, cx, None, "stash name", copy_name.clone());
             }),
+        )
+}
+
+fn submodule_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    submodule: gitturtle_core::SubmoduleSummary,
+    wait: Option<native_accessibility::MenuWait>,
+) -> PopupMenu {
+    let label = format!("{} · {}", submodule.path.display(), submodule.state.label());
+    let initialized = submodule.state != gitturtle_core::SubmoduleState::Uninitialized;
+    let open_owner = owner.clone();
+    let open_repo = repository.clone();
+    let open_sub_path = submodule.path.clone();
+    let init_owner = owner.clone();
+    let init_repo = repository.clone();
+    let init_sub_path = submodule.path.clone();
+    let init_url = submodule.url.clone();
+    let update_owner = owner;
+    let update_repo = repository;
+    let update_sub_path = submodule.path;
+    let update_url = submodule.url;
+    menu.label(label)
+        .item(
+            native_accessibility::waiting_item("Open in tab", !initialized, wait).on_click(
+                move |_, window, cx| {
+                    let _ = open_owner.update(cx, |this, cx| {
+                        if this.path == open_repo
+                            && let Some(root) = &this.path
+                        {
+                            let path = root.join(&open_sub_path);
+                            this.open_repository_tab(path, window, cx);
+                        }
+                    });
+                },
+            ),
+        )
+        .item(
+            native_accessibility::waiting_item("Initialize submodule…", false, wait).on_click(
+                move |_, window, cx| {
+                    let _ = init_owner.update(cx, |this, cx| {
+                        if this.path == init_repo && this.page == AppPage::Repository {
+                            let sub_display = init_sub_path.display().to_string();
+                            let url_note = init_url
+                                .as_deref()
+                                .map(|u| {
+                                    format!(
+                                        "\n\nConfigured .gitmodules URL: {}",
+                                        gitturtle_core::strip_bidi_controls(u)
+                                    )
+                                })
+                                .unwrap_or_default();
+                            this.confirm_git_write(
+                                format!("Initialize submodule {sub_display}"),
+                                format!(
+                                    "Run `git submodule init -- {sub_display}` to register this submodule URL in local Git configuration.{url_note}"
+                                ),
+                                "Initialize submodule",
+                                gitturtle_core::WriteCommand::Submodule(
+                                    gitturtle_core::SubmoduleCommand::Init {
+                                        path: Some(init_sub_path.clone()),
+                                    }
+                                    .into(),
+                                ),
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                },
+            ),
+        )
+        .item(
+            native_accessibility::waiting_item("Update submodule…", false, wait).on_click(
+                move |_, window, cx| {
+                    let _ = update_owner.update(cx, |this, cx| {
+                        if this.path == update_repo && this.page == AppPage::Repository {
+                            let sub_display = update_sub_path.display().to_string();
+                            let url_note = update_url
+                                .as_deref()
+                                .map(|u| {
+                                    format!(
+                                        "\n\nConfigured .gitmodules URL: {}",
+                                        gitturtle_core::strip_bidi_controls(u)
+                                    )
+                                })
+                                .unwrap_or_default();
+                            this.confirm_git_write(
+                                format!("Update submodule {sub_display}"),
+                                format!(
+                                    "Run `git submodule update --init -- {sub_display}` to initialize (if needed), fetch from its configured remote, and check out the recorded submodule revision.{url_note}"
+                                ),
+                                "Update submodule",
+                                gitturtle_core::WriteCommand::Submodule(
+                                    gitturtle_core::SubmoduleCommand::Update {
+                                        path: Some(update_sub_path.clone()),
+                                        init: true,
+                                        recursive: false,
+                                    }
+                                    .into(),
+                                ),
+                                window,
+                                cx,
+                            );
+                        }
+                    });
+                },
+            ),
         )
 }
 
@@ -12108,6 +12377,11 @@ impl Render for GitTurtle {
                     this.show_working(window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CommitStaged, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.commit_staged_shortcut(window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, action: &OpenRepository, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     native_accessibility::dismiss_menus_for_overlay(window, cx);
@@ -12203,6 +12477,7 @@ impl Render for GitTurtle {
             // Copies from any page or dialog are announced from here, and
             // what a scrolling body cannot announce from where it lies.
             .children(copy_feedback::announcement(window, cx))
+            .children(copy_feedback::visual_toast(window, cx))
             .children(copy_feedback::alert_announcement(window, cx))
             // Deferred above the dialog layer: the last paint of the frame
             // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.

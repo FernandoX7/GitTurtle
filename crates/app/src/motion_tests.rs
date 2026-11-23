@@ -9665,6 +9665,7 @@ async fn notes_menu_on_discard(
     const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
     const TRACKED: [&str; 2] = ["a1.txt", "z1.txt"];
     let (fixture, app, cx, repository) = narrow_notes(cx).await;
+    cx.simulate_resize(size(px(461.), px(1200.)));
     cx.update(|window, cx| crate::appearance::ThemeChoice::Midnight.apply(Some(window), cx));
     let change = |name: &str, text: &str| std::fs::write(repository.join(name), text).unwrap();
     for name in TRACKED {

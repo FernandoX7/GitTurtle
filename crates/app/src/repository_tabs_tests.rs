@@ -16036,6 +16036,7 @@ async fn clone_and_create_refuse_at_tab_limit_before_touching_disk(cx: &mut Test
                 &projects::ProjectEvent::Clone {
                     source: "https://example.invalid/repo.git".into(),
                     destination: clone_dest.clone(),
+                    options: gitturtle_core::CloneOptions::default(),
                 },
                 window,
                 cx,
@@ -16055,4 +16056,63 @@ async fn clone_and_create_refuse_at_tab_limit_before_touching_disk(cx: &mut Test
         None,
         "no background Git write should start when at tab limit"
     );
+}
+
+#[gpui::test]
+async fn reorder_repository_tab_moves_tabs_and_preserves_active_tab(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+    let first = app.read_with(cx, |app, _| app.path.clone().expect("first repo"));
+    let second = first.with_file_name("second-tab-order");
+    let third = first.with_file_name("third-tab-order");
+    app.update(cx, |app, _| {
+        for path in [&second, &third] {
+            app.repository_tabs.tabs.push(Tab {
+                path: path.clone(),
+                resolved: true,
+                git_dir: None,
+                saved: Bookmark::default(),
+                warm: None,
+                error: None,
+                before_mark: None,
+            });
+        }
+        app.repository_tabs.active = Some(0);
+    });
+    // Move tab 0 to index 2 -> [second, third, first], active tracks first (index 2).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.reorder_repository_tab(0, 2, window, cx);
+        });
+    });
+    let order = app.read_with(cx, |app, _| {
+        (
+            app.repository_tabs
+                .tabs
+                .iter()
+                .map(|t| t.path.clone())
+                .collect::<Vec<_>>(),
+            app.repository_tabs.active,
+        )
+    });
+    assert_eq!(order.0, vec![second.clone(), third.clone(), first.clone()]);
+    assert_eq!(order.1, Some(2));
+
+    // Move tab 2 back to index 1 -> [second, first, third], active tracks first (index 1).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.reorder_repository_tab(2, 1, window, cx);
+        });
+    });
+    let order = app.read_with(cx, |app, _| {
+        (
+            app.repository_tabs
+                .tabs
+                .iter()
+                .map(|t| t.path.clone())
+                .collect::<Vec<_>>(),
+            app.repository_tabs.active,
+        )
+    });
+    assert_eq!(order.0, vec![second, first, third]);
+    assert_eq!(order.1, Some(1));
 }

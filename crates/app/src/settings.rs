@@ -609,6 +609,11 @@ impl GitTurtle {
                 (path.to_owned(), self.project_name(path))
             }),
             marked: self.shown_tab_unavailable(),
+            code_font: self.settings.code_font.clone(),
+            diff_word_wrap: self.settings.diff_word_wrap,
+            tab_width: self.settings.tab_width,
+            diff_algorithm: self.settings.diff_algorithm,
+            custom_commands: self.settings.custom_commands.clone(),
         }
     }
 
@@ -1064,9 +1069,14 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if code_ratio != 1.0 {
-            for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
-                .into_iter()
-                .flatten()
+            for editor in [
+                &self.patch_editor,
+                &self.before_editor,
+                &self.after_editor,
+                &self.formatted_editor,
+            ]
+            .into_iter()
+            .flatten()
             {
                 text::rescale_editor(editor, code_ratio, cx);
             }
@@ -1771,9 +1781,593 @@ impl GitTurtle {
         );
     }
 
-    /// History's column controls, in Settings (`in_settings`) or History's
-    /// own Columns panel. In Settings the keyboard focusing one scrolls the
-    /// page to show it.
+    /// Code typography, indentation, line wrap, and diff matching controls in Settings.
+    fn render_code_diff_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let owner = cx.entity().downgrade();
+        let active_font = if self.settings.code_font.trim().is_empty() {
+            format!(
+                "Default ({})",
+                gpui_kit::component::Theme::global(cx).mono_font_family
+            )
+        } else {
+            self.settings.code_font.clone()
+        };
+        let font_focus = self.page_focus("settings-code-font-picker", cx);
+        let wrap_focus = self.page_focus("settings-diff-word-wrap", cx);
+        let wrap_desc: SharedString =
+            "Soft-wrap long lines in unified diff and source views.".into();
+        let font_owner = owner;
+        let current_code_font = self.settings.code_font.clone();
+        let font_picker_a11y = format!("Code font family: {active_font}");
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Code font family"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted))
+                                    .child("Choose any installed monospace font."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(vec![Some(font_focus.clone())], cx),
+                            )
+                            .child(
+                                button("settings-code-font-picker", active_font, "", false)
+                                    .track_focus(&font_focus)
+                                    .accessibility_label(font_picker_a11y)
+                                    .debug_selector(|| "settings-code-font-picker".into())
+                                    .app_menu(move |mut menu, _, cx| {
+                                        use gpui_kit::component::menu::PopupMenuItem;
+                                        let o_default = font_owner.clone();
+                                        let selected_default = current_code_font.trim().is_empty();
+                                        menu = menu.item(
+                                            PopupMenuItem::new("Default")
+                                                .checked(selected_default)
+                                                .on_click(move |_, window, cx| {
+                                                    let _ = o_default.update(cx, |this, cx| {
+                                                        this.set_code_font_pref(
+                                                            String::new(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }),
+                                        );
+                                        static MONO_FONTS: std::sync::OnceLock<Vec<String>> =
+                                            std::sync::OnceLock::new();
+                                        let families = MONO_FONTS.get_or_init(|| {
+                                            let mut all = cx.text_system().all_font_names();
+                                            all.sort_unstable();
+                                            all.dedup();
+                                            let mut mono: Vec<String> = all
+                                                .iter()
+                                                .filter(|name| {
+                                                    let lower = name.to_lowercase();
+                                                    lower.contains("mono")
+                                                        || lower.contains("code")
+                                                        || lower.contains("console")
+                                                        || lower.contains("courier")
+                                                        || lower.contains("menlo")
+                                                        || lower.contains("sf mono")
+                                                        || lower.contains("fira")
+                                                        || lower.contains("jetbrains")
+                                                        || lower.contains("iosevka")
+                                                        || lower.contains("hack")
+                                                        || lower.contains("cascadia")
+                                                        || lower.contains("inconsolata")
+                                                        || lower.contains("nerd")
+                                                })
+                                                .cloned()
+                                                .collect();
+                                            if mono.is_empty() {
+                                                mono = all;
+                                            }
+                                            mono.truncate(60);
+                                            mono
+                                        });
+                                        menu = menu.separator();
+                                        for family in families {
+                                            let checked = current_code_font == *family;
+                                            let chosen = family.clone();
+                                            let o_pick = font_owner.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(family.clone())
+                                                    .checked(checked)
+                                                    .on_click(move |_, window, cx| {
+                                                        let chosen = chosen.clone();
+                                                        let _ = o_pick.update(cx, |this, cx| {
+                                                            this.set_code_font_pref(
+                                                                chosen, window, cx,
+                                                            );
+                                                        });
+                                                    }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            ),
+                    )
+                    .child(native_accessibility::hidden_from_assistive_technology(
+                        div()
+                            .w_full()
+                            .p_3()
+                            .rounded(px(6.))
+                            .bg(rgb(p.canvas))
+                            .code_font(cx)
+                            .text_size(crate::appearance::code_text())
+                            .text_color(rgb(p.text))
+                            .child("0O 1lI -> != fn diff(a, b)"),
+                        true,
+                    )),
+            )
+            .child({
+                let tab_focuses: Vec<_> = preferences::ALLOWED_TAB_WIDTHS
+                    .into_iter()
+                    .map(|width| self.page_focus(("settings-tab-width", width as usize), cx))
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Tab width"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted))
+                                    .child("Spaces per tab stop in diffs and file previews."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(
+                                    tab_focuses.iter().cloned().map(Some).collect(),
+                                    cx,
+                                ),
+                            )
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(
+                                preferences::ALLOWED_TAB_WIDTHS
+                                    .into_iter()
+                                    .zip(tab_focuses)
+                                    .map(|(width, focus)| {
+                                        let active = self.settings.tab_width == width;
+                                        button(
+                                            ("settings-tab-width", width as usize),
+                                            format!("{width} spaces"),
+                                            "",
+                                            active,
+                                        )
+                                        .track_focus(&focus)
+                                        .accessibility_label(format!("Tab width: {width} spaces"))
+                                        .debug_selector(move || {
+                                            format!("settings-tab-width-{width}")
+                                        })
+                                        .toggled(active)
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.set_tab_width_pref(width, window, cx);
+                                            }),
+                                        )
+                                    }),
+                            ),
+                    )
+            })
+            .child(
+                div()
+                    .on_children_prepainted(self.keep_in_view(vec![Some(wrap_focus.clone())], cx))
+                    .child(
+                        switch_row(
+                            "settings-diff-word-wrap",
+                            "Wrap lines in diffs",
+                            "Wrap long lines in unified diff and source views",
+                            wrap_desc.clone(),
+                            &[wrap_desc],
+                            cx,
+                        )
+                        .track_focus(&wrap_focus)
+                        .checked(self.settings.diff_word_wrap)
+                        .on_click(cx.listener(
+                            |this, checked: &bool, window, cx| {
+                                this.set_diff_word_wrap(*checked, window, cx);
+                            },
+                        )),
+                    ),
+            )
+            .child({
+                let algo_focuses: Vec<_> = preferences::DiffAlgorithmPref::ALL
+                    .into_iter()
+                    .map(|alg| self.page_focus(("settings-diff-algorithm", alg as usize), cx))
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Diff algorithm"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted))
+                                    .child("Controls how GitTurtle matches changed hunks."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(
+                                    algo_focuses.iter().cloned().map(Some).collect(),
+                                    cx,
+                                ),
+                            )
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(
+                                preferences::DiffAlgorithmPref::ALL
+                                    .into_iter()
+                                    .zip(algo_focuses)
+                                    .map(|(alg, focus)| {
+                                        let active = self.settings.diff_algorithm == alg;
+                                        button(
+                                            ("settings-diff-algorithm", alg as usize),
+                                            alg.label(),
+                                            "",
+                                            active,
+                                        )
+                                        .track_focus(&focus)
+                                        .accessibility_label(format!(
+                                            "Diff algorithm: {}",
+                                            alg.label()
+                                        ))
+                                        .debug_selector(move || {
+                                            format!(
+                                                "settings-diff-algorithm-{}",
+                                                alg.label().to_lowercase()
+                                            )
+                                        })
+                                        .toggled(active)
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.set_diff_algorithm_pref(alg, window, cx);
+                                            }),
+                                        )
+                                    }),
+                            ),
+                    )
+            })
+            .into_any_element()
+    }
+
+    fn render_custom_commands_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let add_focus = self.page_focus("settings-add-custom-command", cx);
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(self.settings.custom_commands.is_empty(), |col| {
+                col.child(
+                    div()
+                        .text_size(crate::appearance::ui_text(12.))
+                        .text_color(rgb(p.muted))
+                        .child("No custom commands yet. Run scripts or linters with {repo}, {branch}, {commit}, or {path} arguments."),
+                )
+            })
+            .children(self.settings.custom_commands.iter().enumerate().map(|(ix, cmd)| {
+                let edit_cmd = cmd.clone();
+                let remove_id = cmd.id.clone();
+                let scopes = cmd
+                    .scopes
+                    .iter()
+                    .map(|s| s.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let edit_focus = self.page_focus(("edit-custom-command", ix), cx);
+                let remove_focus = self.page_focus(("remove-custom-command", ix), cx);
+                div()
+                    .on_children_prepainted(self.keep_in_view(
+                        vec![None, Some(edit_focus.clone()), Some(remove_focus.clone())],
+                        cx,
+                    ))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::appearance::ui_text(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(cmd.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(p.muted))
+                                    .child(format!("{} · {scopes}", cmd.program)),
+                            ),
+                    )
+                    .child(
+                        button(("edit-custom-command", ix), "Edit…", "", false)
+                            .track_focus(&edit_focus)
+                            .accessibility_label(format!("Edit custom command {}", cmd.name))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_custom_command_editor_dialog(
+                                    Some(edit_cmd.clone()),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        button(("remove-custom-command", ix), "Remove", "", false)
+                            .track_focus(&remove_focus)
+                            .accessibility_label(format!("Remove custom command {}", cmd.name))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.remove_custom_command(&remove_id, window, cx);
+                            })),
+                    )
+            }))
+            .child(
+                div()
+                    .on_children_prepainted(self.keep_in_view(vec![Some(add_focus.clone())], cx))
+                    .child(
+                        button("settings-add-custom-command", "Add custom command…", "", false)
+                            .track_focus(&add_focus)
+                            .debug_selector(|| "settings-add-custom-command".into())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_custom_command_editor_dialog(None, window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn open_custom_command_editor_dialog(
+        &mut self,
+        existing: Option<preferences::CustomCommand>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let is_edit = existing.is_some();
+        let initial = existing.unwrap_or_default();
+        let initial_id = if initial.id.is_empty() {
+            format!(
+                "cmd-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_millis())
+            )
+        } else {
+            initial.id.clone()
+        };
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Run unit tests")
+                .default_value(initial.name.clone())
+        });
+        let program_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Executable name or path (no shell)")
+                .default_value(initial.program.clone())
+        });
+        let args_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("One argument per line (e.g. {repo}, {branch}, {commit}, {path})")
+                .default_value(initial.args.join("\n"))
+        });
+        let scopes_state =
+            std::rc::Rc::new(std::cell::RefCell::new(if initial.scopes.is_empty() {
+                vec![preferences::CustomCommandScope::Repository]
+            } else {
+                initial.scopes.clone()
+            }));
+        let confirm_state = std::rc::Rc::new(std::cell::Cell::new(initial.confirm));
+        let preserved_repository_path = initial.repository_path;
+        let error_slot: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        name_input.focus_handle(cx).focus(window, cx);
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let labels = crate::appearance::labels(cx);
+            let name_input = name_input.clone();
+            let program_input = program_input.clone();
+            let args_input = args_input.clone();
+            let submit_name = name_input.clone();
+            let submit_program = program_input.clone();
+            let submit_args = args_input.clone();
+            let scopes_state = std::rc::Rc::clone(&scopes_state);
+            let submit_scopes = std::rc::Rc::clone(&scopes_state);
+            let confirm_state = std::rc::Rc::clone(&confirm_state);
+            let submit_confirm = std::rc::Rc::clone(&confirm_state);
+            let preserved_repository_path = preserved_repository_path.clone();
+            let error_slot = std::rc::Rc::clone(&error_slot);
+            let submit_error = std::rc::Rc::clone(&error_slot);
+            let owner = owner.clone();
+            let id = initial_id.clone();
+            let current_scopes = scopes_state.borrow().clone();
+            let confirm_checked = confirm_state.get();
+            let current_error = error_slot.borrow().clone();
+            dialog
+                .title(if is_edit {
+                    "Edit custom command"
+                } else {
+                    "Add custom command"
+                })
+                .width(appearance::dialog_width(px(540.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Name")
+                                .child(Input::new(&name_input).aria_label("Command name")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Program (invoked directly, never via a shell)")
+                                .child(Input::new(&program_input).aria_label("Program executable")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Arguments (one per line)")
+                                .child(
+                                    Textarea::new(&args_input)
+                                        .h(px(88.))
+                                        .aria_label("Arguments, one per line"),
+                                ),
+                        )
+                        .child(
+                            div().flex().flex_col().gap_1().child("Available in").child(
+                                div().flex().flex_wrap().gap_1().children(
+                                    preferences::CustomCommandScope::ALL
+                                        .into_iter()
+                                        .map(|scope| {
+                                            let active = current_scopes.contains(&scope);
+                                            let scopes_state = std::rc::Rc::clone(&scopes_state);
+                                            button(
+                                                ("custom-cmd-scope", scope as usize),
+                                                scope.label(),
+                                                "",
+                                                active,
+                                            )
+                                            .toggled(active)
+                                            .on_click(
+                                                move |_, window, _| {
+                                                    let mut list = scopes_state.borrow_mut();
+                                                    if let Some(pos) =
+                                                        list.iter().position(|s| *s == scope)
+                                                    {
+                                                        if list.len() > 1 {
+                                                            list.remove(pos);
+                                                        }
+                                                    } else {
+                                                        list.push(scope);
+                                                    }
+                                                    window.refresh();
+                                                },
+                                            )
+                                        }),
+                                ),
+                            ),
+                        )
+                        .child(
+                            gpui_kit::component::checkbox::Checkbox::new("custom-cmd-confirm")
+                                .label("Ask for confirmation before running")
+                                .checked(confirm_checked)
+                                .on_click(move |checked, window, _| {
+                                    confirm_state.set(*checked);
+                                    window.refresh();
+                                }),
+                        )
+                        .when_some(current_error, |col, err| {
+                            col.child(
+                                div()
+                                    .id("custom-cmd-error")
+                                    .role(Role::Alert)
+                                    .aria_label(err.clone())
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(labels.warning))
+                                    .child(err),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Save command", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let args: Vec<String> = submit_args
+                        .read(cx)
+                        .value()
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    let command = preferences::CustomCommand {
+                        id: id.clone(),
+                        name: submit_name.read(cx).value().trim().to_owned(),
+                        program: submit_program.read(cx).value().trim().to_owned(),
+                        args,
+                        scopes: submit_scopes.borrow().clone(),
+                        repository_path: preserved_repository_path.clone(),
+                        confirm: submit_confirm.get(),
+                    };
+                    let outcome = owner
+                        .update(cx, |this, cx| this.save_custom_command(command, window, cx))
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("Window is no longer open")));
+                    match outcome {
+                        Ok(()) => true,
+                        Err(err) => {
+                            *submit_error.borrow_mut() = Some(err.to_string());
+                            window.refresh();
+                            false
+                        }
+                    }
+                })
+        });
+    }
+
     pub(super) fn render_columns_controls(
         &self,
         in_settings: bool,
@@ -3595,6 +4189,13 @@ impl GitTurtle {
                                                 "Keep the information you care about in view.",
                                                 self.render_columns_controls(true, cx),
                                                 cx,
+                                            ))
+                                            .child(settings_section(
+                                                "Code & diff",
+                                                "diff",
+                                                "Choose code typography, indentation, line wrap, and diff matching.",
+                                                self.render_code_diff_controls(cx),
+                                                cx,
                                             )),
                                     )
                                     .child(
@@ -3617,6 +4218,13 @@ impl GitTurtle {
                                                 "user",
                                                 "The name behind your commits.",
                                                 identity,
+                                                cx,
+                                            ))
+                                            .child(settings_section(
+                                                "Custom commands",
+                                                "terminal",
+                                                "Explicit local tools invoked directly without a shell.",
+                                                self.render_custom_commands_controls(cx),
                                                 cx,
                                             )),
                                     ),
@@ -3679,6 +4287,11 @@ struct PageKey {
     /// Whether the shown tab is marked, which refuses Manage named
     /// profiles… with the mark's reason.
     marked: bool,
+    code_font: String,
+    diff_word_wrap: bool,
+    tab_width: u8,
+    diff_algorithm: preferences::DiffAlgorithmPref,
+    custom_commands: Vec<preferences::CustomCommand>,
 }
 
 impl SettingsPage {
@@ -6092,6 +6705,8 @@ mod theme_apply_tests {
         Arc::new(Content::Text {
             diagrams: None,
             markdown: None,
+            table: None,
+            structured: None,
             patch: patch.into(),
             old,
             new,

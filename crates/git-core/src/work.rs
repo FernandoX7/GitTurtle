@@ -32,6 +32,10 @@ mod rewrite_review;
 pub use rewrite_review::*;
 mod profiles;
 pub use profiles::*;
+mod bisect;
+pub use bisect::*;
+mod submodules;
+pub use submodules::*;
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(90);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -108,7 +112,59 @@ pub struct GitProfile {
     pub annotated_tag_signing: bool,
     pub signing_key: Option<String>,
     pub signing_format: Option<String>,
+    pub commit_template: Option<String>,
     pub private_worktree: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullStrategy {
+    #[default]
+    FastForwardOnly,
+    Merge,
+    Rebase,
+    RebaseAutostash,
+}
+
+impl PullStrategy {
+    pub const ALL: [Self; 4] = [
+        Self::FastForwardOnly,
+        Self::Merge,
+        Self::Rebase,
+        Self::RebaseAutostash,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FastForwardOnly => "Fast-forward only (--ff-only)",
+            Self::Merge => "Merge (--no-rebase)",
+            Self::Rebase => "Rebase (--rebase)",
+            Self::RebaseAutostash => "Rebase + Autostash",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CloneOptions {
+    pub depth: Option<u32>,
+    pub branch: Option<String>,
+    pub recurse_submodules: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentCommitMessage {
+    pub oid: String,
+    pub subject: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatchApplyPlan {
+    pub root: PathBuf,
+    pub apply_to_index: bool,
+    pub three_way: bool,
+    pub stat_summary: String,
+    head_oid: Option<String>,
+    patch_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,6 +288,10 @@ pub enum WriteCommand {
     Commit {
         message: String,
     },
+    CommitWithOptions {
+        message: String,
+        signoff: bool,
+    },
     Checkout {
         branch: String,
     },
@@ -250,6 +310,11 @@ pub enum WriteCommand {
         remote: String,
         branch: String,
     },
+    PullWithStrategy {
+        remote: String,
+        branch: String,
+        strategy: PullStrategy,
+    },
     Push {
         remote: String,
         local_branch: String,
@@ -260,6 +325,19 @@ pub enum WriteCommand {
         email: String,
     },
     ApplyProfile(Arc<ProfilePlan>),
+    ApplyPatch {
+        plan: Arc<PatchApplyPlan>,
+        patch_bytes: Vec<u8>,
+    },
+    Bisect(Arc<BisectCommand>),
+    Submodule(Arc<SubmoduleCommand>),
+    CheckoutPullRequest {
+        remote: String,
+        number: u64,
+        local_branch: String,
+        expected_head_sha: String,
+        expected_github_repo: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -333,6 +411,7 @@ impl GitRepository {
             ("MERGE_HEAD", "Merge"),
             ("CHERRY_PICK_HEAD", "Cherry-pick"),
             ("REVERT_HEAD", "Revert"),
+            ("BISECT_START", "Bisect"),
         ] {
             if std::fs::symlink_metadata(git_dir.join(file)).is_ok() {
                 status.operation = Some(name.into());
@@ -715,6 +794,15 @@ impl GitRepository {
         entry: &StatusEntry,
         area: ChangeArea,
     ) -> Result<WorktreePreview> {
+        self.worktree_preview_with_algorithm(entry, area, DiffAlgorithm::Patience)
+    }
+
+    pub fn worktree_preview_with_algorithm(
+        &self,
+        entry: &StatusEntry,
+        area: ChangeArea,
+        algorithm: DiffAlgorithm,
+    ) -> Result<WorktreePreview> {
         let (file, old, new) = self.read_worktree_sides(entry, area)?;
         let (preview, computed_edits) = if area == ChangeArea::Unstaged && file.new_mode == "160000"
         {
@@ -726,7 +814,7 @@ impl GitRepository {
                 None,
             )
         } else {
-            preview_bytes_with_edits(&file, &old, &new, true)
+            preview_bytes_with_edits_algo(&file, &old, &new, true, algorithm)
         };
         let mut result = WorktreePreview {
             file,
@@ -746,6 +834,16 @@ impl GitRepository {
     /// Passive read comparing a revision blob against the current working file.
     /// Never runs filters and never follows stored symlinks.
     pub fn preview_revision_vs_working(&self, file: &FileChange) -> Result<WorktreePreview> {
+        self.preview_revision_vs_working_with_algorithm(file, DiffAlgorithm::Patience)
+    }
+
+    /// Passive read comparing a revision blob against the current working file
+    /// using the requested diff matching algorithm.
+    pub fn preview_revision_vs_working_with_algorithm(
+        &self,
+        file: &FileChange,
+        algorithm: DiffAlgorithm,
+    ) -> Result<WorktreePreview> {
         ensure!(
             !self.bare,
             "Bare repositories do not have a working tree to compare against."
@@ -777,7 +875,7 @@ impl GitRepository {
                 None,
             )
         } else {
-            preview_bytes_with_edits(&file, &old, &new, true)
+            preview_bytes_with_edits_algo(&file, &old, &new, true, algorithm)
         };
         Ok(WorktreePreview {
             file,
@@ -1130,6 +1228,116 @@ impl GitRepository {
         let mut timeout = WRITE_TIMEOUT;
         match operation {
             WriteCommand::ApplyProfile(plan) => return self.execute_profile(plan),
+            WriteCommand::Bisect(command) => return self.execute_bisect(command),
+            WriteCommand::Submodule(command) => return self.execute_submodule(command),
+            WriteCommand::CheckoutPullRequest {
+                remote,
+                number,
+                local_branch,
+                expected_head_sha,
+                expected_github_repo,
+            } => {
+                ensure!(*number >= 1, "Pull request number must be positive.");
+                self.validate_remote(remote)?;
+                self.validate_branch(local_branch)?;
+                validate_oid(expected_head_sha)?;
+                let status = self.status()?;
+                ensure!(
+                    status.operation.is_none() && !status.entries.iter().any(|e| e.conflicted),
+                    "Finish the current Git operation and resolve conflicts before checking out a pull request."
+                );
+                if let Some(expected_slug) = expected_github_repo.as_deref() {
+                    let remote_info = self
+                        .remotes()?
+                        .into_iter()
+                        .find(|r| r.name == *remote)
+                        .with_context(|| format!("Remote '{remote}' no longer exists"))?;
+                    ensure!(
+                        github_url_matches_slug(&remote_info.url, expected_slug),
+                        "Remote “{remote}” does not point to GitHub repository {expected_slug}."
+                    );
+                }
+                let existing = run_git(
+                    self.target(),
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{local_branch}"),
+                    ],
+                );
+                ensure!(
+                    existing.is_err(),
+                    "Local branch “{local_branch}” already exists. Switch to it directly or choose a different branch name."
+                );
+                let mut fetch = normal_command(self.target());
+                configure_network(&mut fetch, self)?;
+                fetch.args([
+                    "fetch",
+                    "--no-recurse-submodules",
+                    "--",
+                    remote,
+                    &format!("refs/pull/{number}/head"),
+                ]);
+                checked_write_output(fetch, None, NETWORK_TIMEOUT)?;
+                let fetched_oid = text(trim_line(&run_git(
+                    self.target(),
+                    &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+                )?));
+                ensure!(
+                    fetched_oid.eq_ignore_ascii_case(expected_head_sha),
+                    "Pull request #{number} moved on the remote (fetched {}, expected {}). Refresh the pull request and review it again before checking out.",
+                    fetched_oid.chars().take(10).collect::<String>(),
+                    expected_head_sha.chars().take(10).collect::<String>()
+                );
+                let mut switch = normal_command(self.target());
+                switch.args([
+                    "switch",
+                    "--no-recurse-submodules",
+                    "-c",
+                    local_branch,
+                    expected_head_sha,
+                ]);
+                let output = checked_write_output(switch, None, GIT_TIMEOUT)?;
+                let stdout_clean = redact_stream(&text(&output.stdout));
+                let stderr_clean = redact_stream(&text(&output.stderr));
+                let message = format!("{stdout_clean}{stderr_clean}").trim().to_owned();
+                return Ok(WriteOutcome {
+                    message: if message.is_empty() {
+                        format!("Checked out PR #{number} into {local_branch}")
+                    } else {
+                        message
+                    },
+                    commit_oid: Some(fetched_oid),
+                    up_to_date: false,
+                });
+            }
+            WriteCommand::ApplyPatch { plan, patch_bytes } => {
+                ensure!(
+                    plan.root == self.path,
+                    "This patch plan belongs to another working copy."
+                );
+                let digest = crate::lower_hex(Sha256::digest(patch_bytes));
+                ensure!(
+                    digest == plan.patch_digest,
+                    "The patch content changed since validation; preview the patch again."
+                );
+                let fresh =
+                    self.plan_apply_patch(patch_bytes, plan.apply_to_index, plan.three_way)?;
+                ensure!(
+                    fresh == **plan,
+                    "Working copy changed since patch validation; review the patch again."
+                );
+                command.args(["apply"]);
+                if plan.apply_to_index {
+                    command.arg("--index");
+                }
+                if plan.three_way {
+                    command.arg("--3way");
+                }
+                command.arg("-");
+                input = Some(patch_bytes.clone());
+            }
             WriteCommand::DownloadLfs(plan) => return self.execute_lfs_download(plan),
             WriteCommand::Worktree(command) => return self.execute_worktree(command),
             WriteCommand::RecoverReflog(plan) => return self.execute_reflog_recovery(plan),
@@ -1230,13 +1438,29 @@ impl GitRepository {
                     ]);
                 }
             }
-            WriteCommand::Commit { message } => {
+            WriteCommand::Commit { message }
+            | WriteCommand::CommitWithOptions {
+                message,
+                signoff: false,
+            } => {
                 ensure!(!message.trim().is_empty(), "Enter a commit message");
                 ensure!(
                     message.len() <= 64 * 1024 && !message.contains('\0'),
                     "Commit message must be at most 64 KiB and contain no NUL bytes"
                 );
                 command.args(["commit", "--cleanup=verbatim", "--file=-"]);
+                input = Some(message.as_bytes().to_vec());
+            }
+            WriteCommand::CommitWithOptions {
+                message,
+                signoff: true,
+            } => {
+                ensure!(!message.trim().is_empty(), "Enter a commit message");
+                ensure!(
+                    message.len() <= 64 * 1024 && !message.contains('\0'),
+                    "Commit message must be at most 64 KiB and contain no NUL bytes"
+                );
+                command.args(["commit", "--signoff", "--cleanup=verbatim", "--file=-"]);
                 input = Some(message.as_bytes().to_vec());
             }
             WriteCommand::Checkout { branch } => {
@@ -1284,26 +1508,20 @@ impl GitRepository {
                 timeout = NETWORK_TIMEOUT;
             }
             WriteCommand::Pull { remote, branch } => {
-                self.validate_remote(remote)?;
-                self.validate_branch(branch)?;
-                let status = self.status()?;
-                ensure!(status.branch.is_some(), "Check out a branch before pulling");
-                ensure!(
-                    status.operation.is_none() && !status.entries.iter().any(|e| e.conflicted),
-                    "Finish the current Git operation and resolve conflicts before pulling"
-                );
-                configure_network(&mut command, self)?;
-                command.args([
-                    "pull",
-                    "--progress",
-                    "--ff-only",
-                    "--no-rebase",
-                    "--no-autostash",
-                    "--no-recurse-submodules",
-                    "--",
+                self.configure_pull_command(
+                    &mut command,
                     remote,
-                    &format!("refs/heads/{branch}"),
-                ]);
+                    branch,
+                    PullStrategy::FastForwardOnly,
+                )?;
+                timeout = NETWORK_TIMEOUT;
+            }
+            WriteCommand::PullWithStrategy {
+                remote,
+                branch,
+                strategy,
+            } => {
+                self.configure_pull_command(&mut command, remote, branch, *strategy)?;
                 timeout = NETWORK_TIMEOUT;
             }
             WriteCommand::Push {
@@ -1363,7 +1581,10 @@ impl GitRepository {
         let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
             .trim()
             .to_owned();
-        let commit_oid = if matches!(operation, WriteCommand::Commit { .. }) {
+        let commit_oid = if matches!(
+            operation,
+            WriteCommand::Commit { .. } | WriteCommand::CommitWithOptions { .. }
+        ) {
             Some(text(trim_line(&run_git(
                 self.target(),
                 &["rev-parse", "--verify", "HEAD"],
@@ -1436,7 +1657,7 @@ impl GitRepository {
                     digest.update(b"\n");
                 }
             }
-            WriteCommand::Pull { .. } => {
+            WriteCommand::Pull { .. } | WriteCommand::PullWithStrategy { .. } => {
                 digest.update(run_git(self.target(), &["rev-parse", "--verify", "HEAD"]).ok()?);
             }
             _ => return None,
@@ -1494,7 +1715,284 @@ impl GitRepository {
         Self::open(destination)
     }
 
+    fn configure_pull_command(
+        &self,
+        command: &mut Command,
+        remote: &str,
+        branch: &str,
+        strategy: PullStrategy,
+    ) -> Result<()> {
+        self.validate_remote(remote)?;
+        self.validate_branch(branch)?;
+        let status = self.status()?;
+        ensure!(status.branch.is_some(), "Check out a branch before pulling");
+        ensure!(
+            status.operation.is_none() && !status.entries.iter().any(|e| e.conflicted),
+            "Finish the current Git operation and resolve conflicts before pulling"
+        );
+        configure_network(command, self)?;
+        command.args(["pull", "--progress"]);
+        match strategy {
+            PullStrategy::FastForwardOnly => {
+                command.args(["--ff-only", "--no-rebase", "--no-autostash"]);
+            }
+            PullStrategy::Merge => {
+                command.args(["--no-rebase", "--no-autostash", "--ff", "--no-edit"]);
+            }
+            PullStrategy::Rebase => {
+                command.args(["--rebase", "--no-autostash"]);
+            }
+            PullStrategy::RebaseAutostash => {
+                command.args(["--rebase", "--autostash"]);
+            }
+        }
+        command.args([
+            "--no-recurse-submodules",
+            "--",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ]);
+        Ok(())
+    }
+
+    /// Passively read the configured `commit.template`, capped at 64 KiB without
+    /// following symlinks. Repository-local/worktree values are confined strictly
+    /// inside the working tree via descriptor-relative `O_NOFOLLOW` traversal;
+    /// global/system values open with `O_NOFOLLOW` and `fstat` regular-file checks.
+    /// Comment lines starting with `#` are stripped so the text is ready for editing.
+    pub fn commit_template_text(&self) -> Result<Option<String>> {
+        const MAX_TEMPLATE_BYTES: usize = 64 * 1024;
+        let mut cfg = normal_command(self.target());
+        cfg.env("GIT_OPTIONAL_LOCKS", "0").args([
+            "-c",
+            "protocol.allow=never",
+            "config",
+            "--show-scope",
+            "--null",
+            "--get",
+            "commit.template",
+        ]);
+        let output = bounded_output(cfg, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let mut fields = output.stdout.split(|b| *b == 0);
+        let scope = std::str::from_utf8(fields.next().unwrap_or(&[]))
+            .unwrap_or("")
+            .trim();
+        let raw_path = std::str::from_utf8(fields.next().unwrap_or(&[]))
+            .unwrap_or("")
+            .trim();
+        if raw_path.is_empty() {
+            return Ok(None);
+        }
+
+        let bytes = if matches!(scope, "local" | "worktree") {
+            let rel = Path::new(raw_path);
+            if rel.is_absolute() || raw_path.starts_with("~/") || validate_path(rel).is_err() {
+                bail!(
+                    "Repository-local commit.template must be a regular file inside the working copy."
+                );
+            }
+            let (mode, data) = read_worktree_file(&self.path, rel, "100644")?;
+            ensure!(
+                mode != "120000",
+                "Configured commit.template must be a regular file (symlinks are refused)."
+            );
+            ensure!(
+                data.len() <= MAX_TEMPLATE_BYTES,
+                "Configured commit.template exceeds the 64 KiB limit."
+            );
+            data
+        } else {
+            let resolved = if let Some(rest) = raw_path.strip_prefix("~/") {
+                let Some(home) = std::env::var_os("HOME") else {
+                    return Ok(None);
+                };
+                PathBuf::from(home).join(rest)
+            } else {
+                let candidate = PathBuf::from(raw_path);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    self.path.join(candidate)
+                }
+            };
+            #[cfg(unix)]
+            let mut file = {
+                use rustix::fs::{Mode, OFlags, open};
+                match open(
+                    &resolved,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                ) {
+                    Ok(fd) => std::fs::File::from(fd),
+                    Err(err) if err == rustix::io::Errno::NOENT => return Ok(None),
+                    Err(err) if err == rustix::io::Errno::LOOP => {
+                        bail!(
+                            "Configured commit.template must be a regular file (symlinks are refused)."
+                        )
+                    }
+                    Err(err) => {
+                        return Err(anyhow::Error::from(std::io::Error::from(err))).with_context(
+                            || format!("Unable to open commit.template at {}", resolved.display()),
+                        );
+                    }
+                }
+            };
+            #[cfg(not(unix))]
+            let mut file = {
+                let Ok(meta) = std::fs::symlink_metadata(&resolved) else {
+                    return Ok(None);
+                };
+                ensure!(
+                    meta.file_type().is_file(),
+                    "Configured commit.template must be a regular file (symlinks are refused)."
+                );
+                std::fs::File::open(&resolved).with_context(|| {
+                    format!("Unable to open commit.template at {}", resolved.display())
+                })?
+            };
+            let meta = file.metadata()?;
+            ensure!(
+                meta.file_type().is_file(),
+                "Configured commit.template must be a regular file."
+            );
+            ensure!(
+                meta.len() <= MAX_TEMPLATE_BYTES as u64,
+                "Configured commit.template exceeds the 64 KiB limit."
+            );
+            let mut data = Vec::with_capacity((meta.len() as usize).min(MAX_TEMPLATE_BYTES));
+            std::io::Read::by_ref(&mut file)
+                .take((MAX_TEMPLATE_BYTES + 1) as u64)
+                .read_to_end(&mut data)?;
+            data
+        };
+        ensure!(
+            bytes.len() <= MAX_TEMPLATE_BYTES && !bytes.contains(&0),
+            "Configured commit.template must be plain UTF-8 text of at most 64 KiB."
+        );
+        let raw =
+            std::str::from_utf8(&bytes).context("Configured commit.template is not valid UTF-8")?;
+        let cleaned: Vec<&str> = raw
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect();
+        let joined = cleaned.join("\n").trim().to_owned();
+        Ok((!joined.is_empty()).then_some(joined))
+    }
+
+    /// Passively read up to `limit` (capped at 20) recent commit messages from `HEAD`.
+    pub fn recent_commit_messages(&self, limit: usize) -> Result<Vec<RecentCommitMessage>> {
+        let count = limit.clamp(1, 20);
+        if !self.has_head()? {
+            return Ok(Vec::new());
+        }
+        let limit_arg = count.to_string();
+        let output = run_git(
+            self.target(),
+            &[
+                "log",
+                "-n",
+                &limit_arg,
+                "--no-show-signature",
+                "--format=%H%x1f%s%x1f%B%x1e",
+            ],
+        )?;
+        let mut results = Vec::new();
+        for record in output.split(|b| *b == 0x1e).filter(|r| !r.is_empty()) {
+            let mut fields = record.splitn(3, |b| *b == 0x1f);
+            let Some(oid_bytes) = fields.next() else {
+                continue;
+            };
+            let Some(subject_bytes) = fields.next() else {
+                continue;
+            };
+            let body_bytes = fields.next().unwrap_or(&[]);
+            let oid = text(trim_line(oid_bytes));
+            let subject = text(trim_line(subject_bytes));
+            let full = text(body_bytes).trim().to_owned();
+            let body = full
+                .strip_prefix(&subject)
+                .map(|rest| rest.trim().to_owned())
+                .unwrap_or_default();
+            if !oid.is_empty() && !subject.is_empty() {
+                results.push(RecentCommitMessage { oid, subject, body });
+            }
+        }
+        Ok(results)
+    }
+
+    /// Passively validate a plain-text patch (`<= 4 MiB`, no NUL bytes) using
+    /// `git apply --check --stat` without modifying the working copy or index.
+    pub fn plan_apply_patch(
+        &self,
+        patch_bytes: &[u8],
+        apply_to_index: bool,
+        three_way: bool,
+    ) -> Result<PatchApplyPlan> {
+        const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
+        ensure!(!self.bare, "Open a working copy to apply a patch.");
+        ensure!(
+            !patch_bytes.is_empty() && patch_bytes.len() <= MAX_PATCH_BYTES,
+            "Patch must be between 1 byte and 4 MiB."
+        );
+        ensure!(
+            !patch_bytes.contains(&0),
+            "Binary or NUL-containing patches cannot be applied here."
+        );
+        let status = self.status()?;
+        ensure!(
+            status.operation.is_none() && !status.entries.iter().any(|e| e.conflicted),
+            "Finish the current Git operation and resolve conflicts before applying a patch."
+        );
+        let head_oid = run_git_output(self.target(), &["rev-parse", "--verify", "--quiet", "HEAD"])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| text(trim_line(&o.stdout)))
+            .filter(|s| !s.is_empty());
+        let mut check_cmd = passive_filter_free_command(self.target())?;
+        check_cmd.args(["apply", "--check"]);
+        if apply_to_index {
+            check_cmd.arg("--index");
+        }
+        if three_way {
+            check_cmd.arg("--3way");
+        }
+        check_cmd.arg("-");
+        let check_out = bounded_write_output(check_cmd, Some(patch_bytes.to_vec()), GIT_TIMEOUT)?;
+        if !check_out.status.success() {
+            return Err(git_failure(
+                &check_out.stderr,
+                format!(
+                    "Patch cannot be applied cleanly: {}",
+                    reported(&check_out.stderr).trim()
+                ),
+            ));
+        }
+        let mut stat_cmd = passive_filter_free_command(self.target())?;
+        stat_cmd.args(["apply", "--stat", "-"]);
+        let stat_out = bounded_write_output(stat_cmd, Some(patch_bytes.to_vec()), GIT_TIMEOUT)?;
+        let stat_summary = text(&stat_out.stdout).trim().to_owned();
+        Ok(PatchApplyPlan {
+            root: self.path.clone(),
+            apply_to_index,
+            three_way,
+            stat_summary,
+            head_oid,
+            patch_digest: crate::lower_hex(Sha256::digest(patch_bytes)),
+        })
+    }
+
     pub fn clone_repository(source: &str, destination: impl AsRef<Path>) -> Result<Self> {
+        Self::clone_repository_with_options(source, destination, &CloneOptions::default())
+    }
+
+    pub fn clone_repository_with_options(
+        source: &str,
+        destination: impl AsRef<Path>,
+        options: &CloneOptions,
+    ) -> Result<Self> {
         ensure!(
             !source.trim().is_empty()
                 && !source.starts_with('-')
@@ -1506,9 +2004,32 @@ impl GitRepository {
         // ext transport runs arbitrary commands. Native Git's usual SSH/HTTPS,
         // file, and git transports remain available only on this explicit action.
         ensure!(
-            !source.starts_with("ext::"),
+            !source
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("ext::"),
             "The executable ext transport is not supported"
         );
+        if let Some(depth) = options.depth {
+            ensure!(
+                (1..=1_000_000).contains(&depth),
+                "Clone depth must be a positive integer between 1 and 1,000,000."
+            );
+        }
+        let branch = options
+            .branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty());
+        if let Some(branch) = branch {
+            ensure!(
+                branch.len() <= 255
+                    && !branch.starts_with('-')
+                    && !branch.contains(['\0', '\n', '\r'])
+                    && !branch.bytes().any(|b| b <= b' ' || b == 0x7f),
+                "Enter a valid branch or tag name for clone."
+            );
+        }
         let destination = fresh_destination(destination.as_ref())?;
         let parent = destination
             .parent()
@@ -1521,15 +2042,22 @@ impl GitRepository {
         if normal_config_at(GitTarget::unconfined(parent), "core.sshCommand")?.is_none() {
             configure_default_network(&mut command);
         }
-        command
-            .args([
-                "clone",
-                "--progress",
-                "--no-recurse-submodules",
-                "--",
-                source,
-            ])
-            .arg(&destination);
+        if options.recurse_submodules {
+            command.args(["-c", "protocol.file.allow=user"]);
+        }
+        command.args(["clone", "--progress"]);
+        if let Some(depth) = options.depth {
+            command.args(["--depth", &depth.to_string()]);
+        }
+        if let Some(branch) = branch {
+            command.args(["--branch", branch]);
+        }
+        if options.recurse_submodules {
+            command.arg("--recurse-submodules");
+        } else {
+            command.arg("--no-recurse-submodules");
+        }
+        command.args(["--", source]).arg(&destination);
         checked_write_output(command, None, NETWORK_TIMEOUT)?;
         Self::open(destination)
     }
@@ -2488,6 +3016,16 @@ fn fresh_destination(path: &Path) -> Result<PathBuf> {
 /// stat entry. Disable every configured local filter driver without touching the
 /// repository's config. Raw worktree bytes are also what our preview displays.
 pub(crate) fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
+    passive_filter_command(target, "^filter\\..*\\.(clean|process|required)$")
+}
+
+/// Passive command builder disabling clean, smudge, process, and required filters
+/// (used by passive `git apply --check` / `--stat` which may invoke smudge conversion).
+fn passive_filter_free_command(target: GitTarget<'_>) -> Result<Command> {
+    passive_filter_command(target, "^filter\\..*\\.(clean|smudge|process|required)$")
+}
+
+fn passive_filter_command(target: GitTarget<'_>, pattern: &str) -> Result<Command> {
     let result = run_git_output(
         target,
         &[
@@ -2496,7 +3034,7 @@ pub(crate) fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
             "--null",
             "--name-only",
             "--get-regexp",
-            "^filter\\..*\\.(clean|process|required)$",
+            pattern,
         ],
     )?;
     // Typed as every configuration read is (`git_failure`): in a linked
@@ -2530,6 +3068,28 @@ pub(crate) fn passive_status_command(target: GitTarget<'_>) -> Result<Command> {
         ));
     }
     Ok(command)
+}
+
+fn github_url_matches_slug(remote_url: &str, expected_slug: &str) -> bool {
+    let trimmed = remote_url.trim().trim_end_matches('/');
+    let rest = if let Some(s) = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        .or_else(|| trimmed.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| trimmed.strip_prefix("git://github.com/"))
+        .or_else(|| trimmed.strip_prefix("git@github.com:"))
+    {
+        s
+    } else if let Some(after_scheme) = trimmed.strip_prefix("https://")
+        && let Some(after_at) = after_scheme.split_once('@').map(|(_, rhs)| rhs)
+        && let Some(s) = after_at.strip_prefix("github.com/")
+    {
+        s
+    } else {
+        return false;
+    };
+    let slug = rest.strip_suffix(".git").unwrap_or(rest);
+    slug.eq_ignore_ascii_case(expected_slug.trim())
 }
 /// Passive read of whether `branch` already records an upstream branch.
 /// Git treats a branch without `branch.<name>.merge` as having no upstream,
@@ -2658,6 +3218,56 @@ pub(super) fn normal_command(target: GitTarget<'_>) -> Command {
     }
     command
 }
+
+/// Passive Git command for reading global/system user config outside any
+/// repository (e.g., `gpg.ssh.allowedSignersFile`) without loading repo config
+/// or invoking helpers/filters/locks.
+pub(crate) fn passive_user_config_command(workdir: &Path) -> Command {
+    let mut command = Command::new("git");
+    crate::isolate_process_group(&mut command);
+    command
+        .current_dir(workdir)
+        .args([
+            "--no-pager",
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "credential.helper=",
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null());
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_PREFIX",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+        "GIT_NAMESPACE",
+        "GIT_SHALLOW_FILE",
+        "GIT_REPLACE_REF_BASE",
+    ] {
+        command.env_remove(key);
+    }
+    command
+}
 fn configure_default_network(command: &mut Command) {
     if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
         // Configured core.sshCommand is checked by repository-aware caller.
@@ -2769,12 +3379,33 @@ fn write_wait_step(
 
 /// Drain pipes concurrently, retaining bounded output. Observe pipe completion as
 /// well as child exit so hooks/SSH descendants cannot hold the UI operation open.
-fn bounded_write_output(
+pub(crate) fn bounded_write_output(
     command: Command,
     input: Option<Vec<u8>>,
     timeout: Duration,
 ) -> Result<Output> {
-    bounded_write_output_with(command, input, timeout, WaitSeam::new(WRITE_WAIT_TICK))
+    bounded_write_output_inner(
+        command,
+        input,
+        timeout,
+        WaitSeam::new(WRITE_WAIT_TICK),
+        None,
+    )
+}
+
+pub(crate) fn bounded_write_output_cancellable(
+    command: Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    cancellation: &HistoryCancellation,
+) -> Result<Output> {
+    bounded_write_output_inner(
+        command,
+        input,
+        timeout,
+        WaitSeam::new(WRITE_WAIT_TICK),
+        Some(cancellation),
+    )
 }
 
 /// [`bounded_write_output`], run with `seam`'s tick and way of seeing the exit.
@@ -2784,14 +3415,27 @@ fn bounded_write_output(
 /// and no more than a tick only while there is something to look for: explicit
 /// cancellation on a controlled operation, or the exit where nothing reports
 /// it.
+#[cfg(test)]
 fn bounded_write_output_with(
-    mut command: Command,
+    command: Command,
     input: Option<Vec<u8>>,
     timeout: Duration,
     seam: WaitSeam,
 ) -> Result<Output> {
+    bounded_write_output_inner(command, input, timeout, seam, None)
+}
+
+fn bounded_write_output_inner(
+    mut command: Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    seam: WaitSeam,
+    extra_cancel: Option<&HistoryCancellation>,
+) -> Result<Output> {
     let control = authentication::current_control();
-    if control.as_ref().is_some_and(OperationControl::is_cancelled) {
+    if control.as_ref().is_some_and(OperationControl::is_cancelled)
+        || extra_cancel.is_some_and(HistoryCancellation::is_cancelled)
+    {
         bail!("Git operation cancelled before starting. It was not retried.");
     }
     isolate_process_group(&mut command);
@@ -2885,7 +3529,8 @@ fn bounded_write_output_with(
         Err(error)
     } else {
         loop {
-            let cancelled = control.as_ref().is_some_and(OperationControl::is_cancelled);
+            let cancelled = control.as_ref().is_some_and(OperationControl::is_cancelled)
+                || extra_cancel.is_some_and(HistoryCancellation::is_cancelled);
             let streams_ended = events.ended(WaitPart::Output)
                 && events.ended(WaitPart::Error)
                 && (!has_input || events.ended(WaitPart::Input));
@@ -2921,7 +3566,7 @@ fn bounded_write_output_with(
                 (_, _, Err(error)) => break Err(error.into()),
                 _ => break Err(anyhow::anyhow!("Missing Git exit status")),
             }
-            let looking = exit.polling();
+            let looking = exit.polling() || extra_cancel.is_some();
             events.next(if looking { left.min(seam.tick) } else { left });
         }
     };
@@ -3079,6 +3724,16 @@ fn preview_bytes_with_edits(
     new: &[u8],
     collect_edits: bool,
 ) -> (TextPreview, Option<(Vec<PartialEdit>, usize)>) {
+    preview_bytes_with_edits_algo(file, old, new, collect_edits, DiffAlgorithm::Patience)
+}
+
+fn preview_bytes_with_edits_algo(
+    file: &FileChange,
+    old: &[u8],
+    new: &[u8],
+    collect_edits: bool,
+    algorithm: DiffAlgorithm,
+) -> (TextPreview, Option<(Vec<PartialEdit>, usize)>) {
     if file.is_submodule()
         && (file.old_path.is_none() || file.old_mode == "160000")
         && (file.new_path.is_none() || file.new_mode == "160000")
@@ -3121,7 +3776,7 @@ fn preview_bytes_with_edits(
         .map(|p| patch_label("b", p))
         .unwrap_or_else(|| "/dev/null".into());
     let diff = TextDiff::configure()
-        .algorithm(Algorithm::Patience)
+        .algorithm(algorithm.to_similar())
         .timeout(Duration::from_millis(250))
         .diff_lines(old_text, new_text);
     let edits = collect_edits.then(|| collect_partial_edits(&diff));

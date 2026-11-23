@@ -35,8 +35,9 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gitturtle_preview::pdf_helper::{
-    ErrorKind, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PROTOCOL_VERSION, PageReply, encode_request,
-    read_reply, serve, serve_buffer,
+    ErrorKind, MAX_REPLY_BYTES, MAX_REQUEST_BYTES, MAX_SEARCH_REPLY_BYTES, PROTOCOL_VERSION,
+    PageReply, encode_request, encode_search_request, read_reply, read_search_reply, serve,
+    serve_buffer,
 };
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{FileType, MemfdFlags, OFlags, SealFlags, SeekFrom};
@@ -1011,6 +1012,21 @@ impl<'a> Client<'a> {
             page,
         )
     }
+
+    /// Bounded case-insensitive text search across `pdf` inside a fresh
+    /// confined helper process (`GTPS`/`GTPR` frame).
+    pub fn search_text(
+        &self,
+        pdf: &[u8],
+        query: &str,
+        check: &dyn Fn() -> anyhow::Result<()>,
+    ) -> Result<gitturtle_preview::PdfSearchReply, Failure> {
+        let prefix = encode_search_request(query, pdf).map_err(Failure::Refused)?;
+        classify_search(
+            self.runner
+                .run([&prefix, pdf], MAX_SEARCH_REPLY_BYTES, check),
+        )
+    }
 }
 
 /// How the exchange with a helper ended.
@@ -1245,5 +1261,21 @@ fn classify(outcome: Outcome, page: usize) -> Result<PageReply, Failure> {
         }
         Ok(Err(kind)) => Err(Failure::Document { kind, page }),
         Ok(Ok(_)) | Err(_) => Err(Failure::Unreadable),
+    }
+}
+
+fn classify_search(outcome: Outcome) -> Result<gitturtle_preview::PdfSearchReply, Failure> {
+    let reply = match outcome {
+        Outcome::Replied(reply) => reply,
+        Outcome::Cancelled(error) => return Err(Failure::Cancelled(error)),
+        Outcome::TimedOut => return Err(Failure::TimedOut),
+        Outcome::Stopped { signal } => return Err(Failure::Stopped { signal }),
+        Outcome::Oversized => return Err(Failure::Unreadable),
+        Outcome::CouldNotStart => return Err(Failure::CouldNotStart),
+    };
+    match read_search_reply(&reply[..]) {
+        Ok(Ok(found)) => Ok(found),
+        Ok(Err(kind)) => Err(Failure::Document { kind, page: 0 }),
+        Err(_) => Err(Failure::Unreadable),
     }
 }

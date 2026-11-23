@@ -2216,16 +2216,28 @@ impl GitTurtle {
     }
 
     /// The row of the heading whose Stage all or Unstage all reads its
-    /// confirmation now, if any.
+    /// confirmation now, if any. After Stage all moves every unstaged change
+    /// into Staged, keep the Staged (N) · Unstage all heading visible.
     fn confirming_heading(&self, cx: &App) -> Option<usize> {
-        [ChangeArea::Staged, ChangeArea::Unstaged]
+        let exact = [ChangeArea::Staged, ChangeArea::Unstaged]
             .into_iter()
             .filter(|area| copy_feedback::confirmed(&confirmations::all(&self.path, *area), cx))
             .find_map(|confirming| {
                 self.working_rows.iter().position(
                     |row| matches!(row, WorkingRow::Heading(area, _) if *area == confirming),
                 )
-            })
+            });
+        if exact.is_some() {
+            return exact;
+        }
+        // When Stage all clears the Unstaged group completely, reveal the Staged
+        // heading so the user immediately sees Staged (N) · Unstage all.
+        if copy_feedback::confirmed(&confirmations::all(&self.path, ChangeArea::Unstaged), cx) {
+            return self.working_rows.iter().position(
+                |row| matches!(row, WorkingRow::Heading(ChangeArea::Staged, count) if *count > 0),
+            );
+        }
+        None
     }
 }
 
@@ -2551,6 +2563,20 @@ fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f3
         .min(available - list_reserve)
 }
 
+fn split_commit_template(text: &str) -> (String, String) {
+    let mut lines = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .skip_while(|line| line.trim().is_empty());
+    let title = lines
+        .next()
+        .map(|l| l.trim().to_owned())
+        .unwrap_or_default();
+    let body_lines: Vec<&str> = lines.skip_while(|line| line.trim().is_empty()).collect();
+    let body = body_lines.join("\n").trim_end().to_owned();
+    (title, body)
+}
+
 impl GitTurtle {
     pub(super) fn current_commit_draft(&self, cx: &App) -> CommitDraft {
         CommitDraft {
@@ -2685,6 +2711,403 @@ impl GitTurtle {
         self.save_commit_draft(worktree.clone(), CommitDraft::default(), window, cx);
     }
 
+    pub(super) fn commit_staged_shortcut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Repository
+            || self.mode != WorkspaceMode::Working
+            || window.has_active_dialog(cx)
+            || self.shown_tab_unavailable()
+            || self.integration_state.is_some()
+            || self.refuse_busy_press(cx)
+        {
+            return;
+        }
+        let Some(status) = self.work_status.as_ref() else {
+            return;
+        };
+        let has_staged = status.entries.iter().any(|entry| entry.staged.is_some());
+        let has_conflicts = status.entries.iter().any(|entry| entry.conflicted);
+        let draft = self.current_commit_draft(cx);
+        if !has_staged || has_conflicts || draft.title.trim().is_empty() {
+            return;
+        }
+        let message = draft.message();
+        self.write(
+            WriteCommand::Commit { message },
+            "Creating commit…",
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn commit_and_push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != AppPage::Repository
+            || self.shown_tab_unavailable()
+            || self.integration_state.is_some()
+            || self.refuse_busy_press(cx)
+        {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let Some(status) = self.work_status.as_ref() else {
+            return;
+        };
+        let has_staged = status.entries.iter().any(|entry| entry.staged.is_some());
+        let has_conflicts = status.entries.iter().any(|entry| entry.conflicted);
+        let draft = self.current_commit_draft(cx);
+        if !has_staged || has_conflicts || draft.title.trim().is_empty() {
+            return;
+        }
+        let remote = self.remote_name.read(cx).value().trim().to_owned();
+        let remote_branch = self.remote_branch.read(cx).value().trim().to_owned();
+        let local_branch = status.branch.clone().unwrap_or_default();
+        if remote.is_empty() || remote_branch.is_empty() || local_branch.is_empty() {
+            self.operation_error = Some(
+                "Configure a branch and remote target in Targets before using Commit & Push."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        self.pending_push_after_commit = Some((path, remote, local_branch, remote_branch));
+        let message = draft.message();
+        self.write(
+            WriteCommand::Commit { message },
+            "Creating commit…",
+            window,
+            cx,
+        );
+        // If `self.write` declined early (for example, missing/bare repo), clear
+        // the armed follow-up push so a later ordinary Commit never pushes unexpectedly.
+        if self.operation_busy.is_none() {
+            self.pending_push_after_commit = None;
+        }
+    }
+
+    pub(super) fn insert_signoff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(profile) = self.profile.as_ref() else {
+            self.operation_error =
+                Some("Git identity has not loaded yet. Wait a moment and try again.".into());
+            cx.notify();
+            return;
+        };
+        let name = profile.name.trim();
+        let email = profile.email.trim();
+        if name.is_empty() || email.is_empty() {
+            self.operation_error = Some(
+                "Set user.name and user.email in Git identity before adding Signed-off-by.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        let trailer = format!("Signed-off-by: {name} <{email}>");
+        let existing = self.commit_message.read(cx).value().to_string();
+        if existing.lines().any(|line| line.trim() == trailer) {
+            return;
+        }
+        let trimmed = existing.trim_end();
+        let updated = if trimmed.is_empty() {
+            trailer
+        } else {
+            format!("{trimmed}\n\n{trailer}")
+        };
+        self.commit_message
+            .update(cx, |input, cx| input.set_value(updated, window, cx));
+        self.persist_commit_draft(window, cx);
+    }
+
+    pub(super) fn apply_commit_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let path = repo.path().to_owned();
+        let response = self
+            .operations
+            .submit_read(move || repo.commit_template_text());
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(result) = response.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.path.as_ref() != Some(&path) {
+                    return;
+                }
+                match result {
+                    Ok(Some(template)) => {
+                        let (title, body) = split_commit_template(&template);
+                        if this.commit_title.read(cx).value().trim().is_empty() && !title.is_empty()
+                        {
+                            this.commit_title
+                                .update(cx, |input, cx| input.set_value(title, window, cx));
+                        }
+                        if !body.is_empty() {
+                            let existing = this.commit_message.read(cx).value().to_string();
+                            let updated = if existing.trim().is_empty() {
+                                body
+                            } else {
+                                format!("{}\n\n{body}", existing.trim_end())
+                            };
+                            this.commit_message
+                                .update(cx, |input, cx| input.set_value(updated, window, cx));
+                        }
+                        this.persist_commit_draft(window, cx);
+                    }
+                    Ok(None) => {
+                        this.operation_notice =
+                            Some("No commit.template is configured for this repository.".into());
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn open_recent_commit_messages(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let path = repo.path().to_owned();
+        let response = self
+            .operations
+            .submit_read(move || repo.recent_commit_messages(20));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(result) = response.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository {
+                    return;
+                }
+                match result {
+                    Ok(messages) => {
+                        let owner = cx.entity().downgrade();
+                        let messages = Arc::new(messages);
+                        window.open_dialog(cx, move |dialog, window, cx| {
+                            let p = palette(cx);
+                            let owner = owner.clone();
+                            let messages = Arc::clone(&messages);
+                            let list = if messages.is_empty() {
+                                div()
+                                    .text_size(crate::appearance::ui_text(12.))
+                                    .text_color(rgb(p.muted))
+                                    .child("No recent commits found on this branch.")
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .id("recent-commit-messages-list")
+                                    .max_h(px(340.))
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(messages.iter().enumerate().map(|(ix, item)| {
+                                        let subject = item.subject.clone();
+                                        let body = item.body.clone();
+                                        let short = short_oid(&item.oid);
+                                        let owner = owner.clone();
+                                        let path = path.clone();
+                                        let label = format!("{} · {short}", item.subject);
+                                        let accessible = format!(
+                                            "Use commit message from {short}: {}",
+                                            item.subject
+                                        );
+                                        button(("recent-commit-msg", ix), label, "", false)
+                                            .debug_selector(move || {
+                                                format!("recent-commit-msg-{ix}")
+                                            })
+                                            .accessibility_label(accessible)
+                                            .w_full()
+                                            .on_click(move |_, window, cx| {
+                                                let subject = subject.clone();
+                                                let body = body.clone();
+                                                let path = path.clone();
+                                                let _ = owner.update(cx, |this, cx| {
+                                                    if this.path.as_ref() == Some(&path) {
+                                                        this.commit_title.update(
+                                                            cx,
+                                                            |input, cx| {
+                                                                input.set_value(subject, window, cx)
+                                                            },
+                                                        );
+                                                        this.commit_message.update(
+                                                            cx,
+                                                            |input, cx| {
+                                                                input.set_value(body, window, cx)
+                                                            },
+                                                        );
+                                                        this.persist_commit_draft(window, cx);
+                                                    }
+                                                });
+                                                window.close_dialog(cx);
+                                            })
+                                    }))
+                                    .into_any_element()
+                            };
+                            dialog
+                                .title("Recent commit messages")
+                                .width(appearance::dialog_width(px(540.), window))
+                                .max_h(appearance::dialog_max_height(window))
+                                .child(list)
+                                .footer(crate::tags::dialog_dismiss_footer("Close"))
+                        });
+                    }
+                    Err(error) => {
+                        this.operation_error = Some(crate::views::OperationFailure::of(&error));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn prefill_squash_message(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        if repo.path() != path {
+            return;
+        }
+        let response = self.operations.submit_read(move || repo.squash_message());
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(text))) = response.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.path.as_ref() != Some(&path) || !this.current_commit_draft(cx).is_empty() {
+                    return;
+                }
+                let (title, body) = split_commit_template(&text);
+                if !title.is_empty() {
+                    this.commit_title
+                        .update(cx, |input, cx| input.set_value(title, window, cx));
+                }
+                if !body.is_empty() {
+                    this.commit_message
+                        .update(cx, |input, cx| input.set_value(body, window, cx));
+                }
+                this.persist_commit_draft(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    pub(super) fn open_pull_options_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() || self.shown_tab_unavailable() {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let remote = self.remote_name.read(cx).value().trim().to_owned();
+        let branch = self.remote_branch.read(cx).value().trim().to_owned();
+        if remote.is_empty() || branch.is_empty() {
+            self.operation_error =
+                Some("Configure a remote and remote branch in Targets before pulling.".into());
+            cx.notify();
+            return;
+        }
+        let strategy = std::rc::Rc::new(std::cell::Cell::new(
+            gitturtle_core::PullStrategy::FastForwardOnly,
+        ));
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let strategy = std::rc::Rc::clone(&strategy);
+            let submit_strategy = std::rc::Rc::clone(&strategy);
+            let owner = owner.clone();
+            let path = path.clone();
+            let remote_title = format!("Pull from {remote}/{branch}");
+            let remote_submit = remote.clone();
+            let branch_submit = branch.clone();
+            let selected = strategy.get();
+            dialog
+                .title(remote_title)
+                .width(appearance::dialog_width(px(480.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(crate::appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child("Choose how Git should integrate upstream commits into the current branch."),
+                        )
+                        .children(gitturtle_core::PullStrategy::ALL.into_iter().map(|choice| {
+                            let is_selected = selected == choice;
+                            let strategy = std::rc::Rc::clone(&strategy);
+                            button(
+                                ("pull-strategy", choice as usize),
+                                choice.label(),
+                                if is_selected { "check" } else { "" },
+                                is_selected,
+                            )
+                            .toggled(is_selected)
+                            .accessibility_label(format!("Pull strategy: {}", choice.label()))
+                            .debug_selector(move || format!("pull-strategy-{}", choice as usize))
+                            .w_full()
+                            .on_click(move |_, window, _| {
+                                strategy.set(choice);
+                                window.refresh();
+                            })
+                        })),
+                )
+                .footer(crate::tags::dialog_footer("Pull", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let chosen = submit_strategy.get();
+                    let remote = remote_submit.clone();
+                    let branch = branch_submit.clone();
+                    let path = path.clone();
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path.as_ref() != Some(&path) || this.operation_busy.is_some() {
+                            return;
+                        }
+                        let origin = confirmations::sync("pull", &this.path, &[&remote, &branch]);
+                        let label = match chosen {
+                            gitturtle_core::PullStrategy::FastForwardOnly => {
+                                "Pulling fast-forward…"
+                            }
+                            gitturtle_core::PullStrategy::Merge => "Pulling with merge…",
+                            gitturtle_core::PullStrategy::Rebase => "Pulling with rebase…",
+                            gitturtle_core::PullStrategy::RebaseAutostash => {
+                                "Pulling with rebase + autostash…"
+                            }
+                        };
+                        this.write_from(
+                            WriteCommand::PullWithStrategy {
+                                remote,
+                                branch,
+                                strategy: chosen,
+                            },
+                            label,
+                            Some(origin.into()),
+                            window,
+                            cx,
+                        );
+                    });
+                    true
+                })
+        });
+    }
+
     pub(super) fn project_event(
         &mut self,
         event: &projects::ProjectEvent,
@@ -2729,16 +3152,24 @@ impl GitTurtle {
             projects::ProjectEvent::Clone {
                 source,
                 destination,
+                options,
             } => {
                 if self.refuse_project_at_tab_limit(cx) {
                     return;
                 }
                 let source = source.clone();
                 let destination = destination.clone();
+                let options = options.clone();
                 self.create_project(
                     "Cloning repository…",
                     destination.clone(),
-                    move || GitRepository::clone_repository(&source, &destination),
+                    move || {
+                        GitRepository::clone_repository_with_options(
+                            &source,
+                            &destination,
+                            &options,
+                        )
+                    },
                     window,
                     cx,
                 );
@@ -3074,6 +3505,7 @@ impl GitTurtle {
             profile,
             remotes,
             operation,
+            bisect,
             read_from,
         } = state;
         let path = self.path.clone();
@@ -3089,6 +3521,7 @@ impl GitTurtle {
                 None
             }
         };
+        self.bisect_state = bisect.ok().flatten();
         if ended {
             self.integration_ended(window, cx);
         }
@@ -3867,6 +4300,7 @@ impl GitTurtle {
             partial,
             split,
             split_partial,
+            structured,
             ..
         } = content.as_ref()
         else {
@@ -3885,6 +4319,13 @@ impl GitTurtle {
         }
         if let Some(editor) = &self.after_editor {
             crate::text::refresh_editor(editor, new, None, window, cx);
+        }
+        if let Some(editor) = &self.formatted_editor {
+            if let Some(formatted) = structured.as_ref().and_then(|s| s.display_text().ok()) {
+                crate::text::refresh_editor(editor, formatted, None, window, cx);
+            } else {
+                self.formatted_editor = None;
+            }
         }
         if let Some(split_view) = split_view {
             if let Some(split) = split {
@@ -4556,8 +4997,17 @@ impl GitTurtle {
             }
             _ => None,
         };
+        let was_squash_merge = matches!(
+            &command,
+            WriteCommand::Integration(gitturtle_core::IntegrationCommand::MergeWithOptions {
+                mode: gitturtle_core::MergeMode::Squash,
+                ..
+            })
+        );
         let submitted_message = match &command {
-            WriteCommand::Commit { message } => Some(message.clone()),
+            WriteCommand::Commit { message } | WriteCommand::CommitWithOptions { message, .. } => {
+                Some(message.clone())
+            }
             _ => None,
         };
         let submitted_branch = match &command {
@@ -4625,7 +5075,33 @@ impl GitTurtle {
             } else {
                 "Fetched all remotes".into()
             }),
-            WriteCommand::Pull { remote, branch } => Some(format!("Pulled {remote}/{branch}")),
+            WriteCommand::Pull { remote, branch }
+            | WriteCommand::PullWithStrategy { remote, branch, .. } => {
+                Some(format!("Pulled {remote}/{branch}"))
+            }
+            WriteCommand::ApplyPatch { .. } => Some("Applied patch to working tree".into()),
+            WriteCommand::Bisect(bisect) => Some(match bisect.as_ref() {
+                gitturtle_core::BisectCommand::Start { .. } => "Started git bisect".into(),
+                gitturtle_core::BisectCommand::Good { .. } => "Marked bisect commit good".into(),
+                gitturtle_core::BisectCommand::Bad { .. } => "Marked bisect commit bad".into(),
+                gitturtle_core::BisectCommand::Skip { .. } => "Skipped bisect commit".into(),
+                gitturtle_core::BisectCommand::Reset { .. } => "Ended git bisect".into(),
+            }),
+            WriteCommand::Submodule(submodule) => Some(match submodule.as_ref() {
+                gitturtle_core::SubmoduleCommand::Init { path } => match path {
+                    Some(path) => format!("Initialized submodule {}", path.display()),
+                    None => "Initialized submodules".into(),
+                },
+                gitturtle_core::SubmoduleCommand::Update { path, .. } => match path {
+                    Some(path) => format!("Updated submodule {}", path.display()),
+                    None => "Updated submodules".into(),
+                },
+            }),
+            WriteCommand::CheckoutPullRequest {
+                number,
+                local_branch,
+                ..
+            } => Some(format!("Checked out PR #{number} into {local_branch}")),
             WriteCommand::Push {
                 remote,
                 local_branch,
@@ -4656,7 +5132,8 @@ impl GitTurtle {
             WriteCommand::FetchAll { .. } => {
                 Some("Up to date with all remotes · nothing new".into())
             }
-            WriteCommand::Pull { remote, branch } => {
+            WriteCommand::Pull { remote, branch }
+            | WriteCommand::PullWithStrategy { remote, branch, .. } => {
                 Some(format!("Up to date with {remote}/{branch} · nothing new"))
             }
             _ => None,
@@ -4684,6 +5161,7 @@ impl GitTurtle {
         let refresh_history = matches!(
             &command,
             WriteCommand::Commit { .. }
+                | WriteCommand::CommitWithOptions { .. }
                 | WriteCommand::InteractiveRebase(_)
                 | WriteCommand::Worktree(_)
                 | WriteCommand::RecoverReflog(_)
@@ -4695,7 +5173,11 @@ impl GitTurtle {
                 | WriteCommand::Fetch { .. }
                 | WriteCommand::FetchAll { .. }
                 | WriteCommand::Pull { .. }
+                | WriteCommand::PullWithStrategy { .. }
                 | WriteCommand::Push { .. }
+                | WriteCommand::Bisect(_)
+                | WriteCommand::Submodule(_)
+                | WriteCommand::CheckoutPullRequest { .. }
         ) || matches!(&command, WriteCommand::Integration(operation) if !matches!(operation, gitturtle_core::IntegrationCommand::Resolve { .. }))
             || matches!(
                 &command,
@@ -4708,6 +5190,8 @@ impl GitTurtle {
                             | gitturtle_core::RecoveryCommand::CherryPick { .. }
                             | gitturtle_core::RecoveryCommand::Reset { .. }
                             | gitturtle_core::RecoveryCommand::CreateStash { .. }
+                            | gitturtle_core::RecoveryCommand::PopStash { .. }
+                            | gitturtle_core::RecoveryCommand::BranchFromStash { .. }
                             | gitturtle_core::RecoveryCommand::DropStash { .. }
                     )
             );
@@ -4818,11 +5302,36 @@ impl GitTurtle {
                 if succeeded && let Some(message) = &submitted_message {
                     this.clear_committed_draft(&path, message, window, cx);
                 }
+                let follow_up_push = if succeeded && submitted_message.is_some() {
+                    this.pending_push_after_commit.take().filter(|(push_path, ..)| {
+                        push_path == &path && this.path.as_ref() == Some(&path)
+                    })
+                } else {
+                    if submitted_message.is_some() {
+                        this.pending_push_after_commit = None;
+                    }
+                    None
+                };
+                if succeeded && was_squash_merge && this.path.as_ref() == Some(&path) {
+                    this.prefill_squash_message(path.clone(), window, cx);
+                }
                 if this.path.as_ref()==Some(&path) && succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
                     this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                 }
                 let download = downloading_lfs.then(|| (succeeded, this.lfs_download_ends(lfs_failure, lfs_selection)));
                 this.read_after_write(&path, refresh_history || refused, download, window, cx);
+                if let Some((_, remote, local_branch, remote_branch)) = follow_up_push {
+                    this.write(
+                        WriteCommand::Push {
+                            remote,
+                            local_branch,
+                            remote_branch,
+                        },
+                        "Pushing branch…",
+                        window,
+                        cx,
+                    );
+                }
                 cx.notify();
             });
         }));
@@ -5684,8 +6193,19 @@ impl GitTurtle {
         } else {
             128.
         };
-        let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
-        let description_height = description_height.max(f32::from(metrics.description_least()));
+        let description_active = !self.commit_message.read(cx).value().trim().is_empty()
+            || self
+                .commit_message
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
+        let description_height = if description_active {
+            ((available - 440.) * 0.5 + 64.)
+                .clamp(64., normal_description)
+                .max(f32::from(metrics.description_least()))
+        } else {
+            f32::from(metrics.description_least()).max(44.)
+        };
         let composer_height = commit_composer_height(
             available,
             self.settings.density.file_row_height(),
@@ -5757,7 +6277,7 @@ impl GitTurtle {
         let (drawn, description) = match description {
             // Laid out at its rows' own height in the scrolling body.
             _ if scrolls => (content, description),
-            Some(field) if composer && !short => (
+            Some(field) if composer && !short && description_active => (
                 composer_height,
                 Some(field + (composer_height - content).max(0.)),
             ),
@@ -6078,9 +6598,44 @@ impl GitTurtle {
                                                             .debug_selector(move || {
                                                                 format!("commit-composer-branch/{line}")
                                                             })
+                                                            .flex_1()
+                                                            .min_w_0()
                                                             .truncate()
                                                             .child(line.to_owned())
-                                                    }),
+                                                    })
+                                                    .when(
+                                                        self.profile
+                                                            .as_ref()
+                                                            .is_some_and(|profile| profile.signing),
+                                                        |row| {
+                                                            row.child(
+                                                                div()
+                                                                    .id("commit-signing-badge")
+                                                                    .debug_selector(|| {
+                                                                        "commit-signing-badge"
+                                                                            .into()
+                                                                    })
+                                                                    .flex_shrink_0()
+                                                                    .text_size(
+                                                                        crate::appearance::ui_text(
+                                                                            10.,
+                                                                        ),
+                                                                    )
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(rgb(p.small_label(
+                                                                        p.accent,
+                                                                        &[p.panel],
+                                                                    )))
+                                                                    .tooltip(|window, cx| {
+                                                                        Tooltip::new(
+                                                                            "Commit signing is enabled in Git config",
+                                                                        )
+                                                                        .build(window, cx)
+                                                                    })
+                                                                    .child("Signed"),
+                                                            )
+                                                        },
+                                                    ),
                                             )
                                         })
                                         // The title's label, field and any note,
@@ -7603,6 +8158,15 @@ impl GitTurtle {
                 refusing(control, move || id.into(), busy || missing, unavailable)
                     .debug_selector(move || id.into())
                     .accessibility_label(action.name.clone())
+                    .when(id == "pull", |el| {
+                        el.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.open_pull_options_dialog(window, cx);
+                            }),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.refuse_unread_press(cx) {
                             return;
@@ -9756,6 +10320,7 @@ mod background_clone_tests {
                     &projects::ProjectEvent::Clone {
                         source: source.display().to_string(),
                         destination: destination.clone(),
+                        options: gitturtle_core::CloneOptions::default(),
                     },
                     window,
                     cx,

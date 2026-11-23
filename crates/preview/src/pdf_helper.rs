@@ -24,8 +24,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use anyhow::Result;
 
 use crate::{
-    ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, PDF_PREVIEW_EDGE,
-    PdfPageText, check_dimensions, check_pdf_input, image_helper, pdf_hayro, scaled_dimensions,
+    ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, MAX_PDF_SEARCH_MATCHES,
+    MAX_PDF_SEARCH_PAGES, MAX_PDF_SEARCH_QUERY_BYTES, MAX_PDF_SEARCH_SNIPPET_BYTES,
+    PDF_PREVIEW_EDGE, PdfPageText, PdfSearchMatch, PdfSearchReply, check_dimensions,
+    check_pdf_input, check_pdf_search_input, image_helper, pdf_hayro, scaled_dimensions,
 };
 pub use image_helper::{
     ConfinedFormat, IMAGE_REQUEST_HEADER_BYTES, ImageErrorKind, ImageFlags, ImageReply,
@@ -34,24 +36,34 @@ pub use image_helper::{
 };
 
 /// Changes whenever any frame changes; both sides refuse any other value.
-/// Version 2 added the image frame; the PDF frames are unchanged.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version 2 added the image frame; version 3 adds the PDF text-search frame (`GTPS`/`GTPR`).
+pub const PROTOCOL_VERSION: u32 = 3;
 /// The fixed request header [`encode_request`] returns.
 pub const REQUEST_HEADER_BYTES: usize = 16;
+/// The fixed prefix header for a PDF text-search request (`GTPS` + version + query_len + pdf_len).
+pub const SEARCH_REQUEST_HEADER_BYTES: usize = 16;
 /// The largest reply [`read_reply`] accepts: a 1,000 × 1,000 page and 256 KiB
 /// of text, plus the headers. A client may stop reading past this many bytes.
 pub const MAX_REPLY_BYTES: usize =
     REPLY_PREFIX_BYTES + PAGE_HEADER_BYTES + MAX_PIXEL_BYTES + MAX_PDF_PAGE_TEXT_BYTES;
+/// Maximum byte length of a PDF search reply (`GTPR`).
+pub const MAX_SEARCH_REPLY_BYTES: usize = REPLY_PREFIX_BYTES
+    + SEARCH_HEADER_BYTES
+    + MAX_PDF_SEARCH_MATCHES * (12 + MAX_PDF_SEARCH_SNIPPET_BYTES);
 
 const REQUEST_MAGIC: [u8; 4] = *b"GTPq";
 const REPLY_MAGIC: [u8; 4] = *b"GTPr";
+const SEARCH_REQUEST_MAGIC: [u8; 4] = *b"GTPS";
+const SEARCH_REPLY_MAGIC: [u8; 4] = *b"GTPR";
 const PDF_SIGNATURE: &[u8; 5] = b"%PDF-";
 const REPLY_PREFIX_BYTES: usize = 9;
 const FAILURE_BYTES: usize = 5;
 const PAGE_HEADER_BYTES: usize = 43;
+const SEARCH_HEADER_BYTES: usize = 13;
 const MAX_PIXEL_BYTES: usize = PDF_PREVIEW_EDGE as usize * PDF_PREVIEW_EDGE as usize * 4;
 const STATUS_PAGE: u8 = 0;
 const STATUS_FAILED: u8 = 1;
+const STATUS_SEARCH: u8 = 2;
 const TEXT_ABSENT: u8 = 0;
 const TEXT_PRESENT: u8 = 1;
 const TEXT_FAILED: u8 = 2;
@@ -198,13 +210,143 @@ pub fn read_reply(mut input: impl Read) -> io::Result<Result<PageReply, ErrorKin
     Ok(reply)
 }
 
-/// Maximum request frame size across both PDF and image requests.
-pub const MAX_REQUEST_BYTES: usize = MAX_INPUT_BYTES
-    + if REQUEST_HEADER_BYTES > image_helper::IMAGE_REQUEST_HEADER_BYTES {
-        REQUEST_HEADER_BYTES
-    } else {
-        image_helper::IMAGE_REQUEST_HEADER_BYTES
+/// Maximum request frame size across PDF page, PDF search, and image requests.
+pub const MAX_REQUEST_BYTES: usize =
+    MAX_INPUT_BYTES + SEARCH_REQUEST_HEADER_BYTES + MAX_PDF_SEARCH_QUERY_BYTES;
+
+/// Encode the header and UTF-8 query prefix for a confined PDF text-search request.
+/// Write the returned bytes followed by `pdf` unchanged.
+pub fn encode_search_request(query: &str, pdf: &[u8]) -> Result<Vec<u8>> {
+    check_pdf_search_input(pdf, query)?;
+    let trimmed = query.trim();
+    let mut prefix = Vec::with_capacity(SEARCH_REQUEST_HEADER_BYTES + trimmed.len());
+    prefix.extend_from_slice(&SEARCH_REQUEST_MAGIC);
+    prefix.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    prefix.extend_from_slice(&wire(trimmed.len()).to_le_bytes());
+    prefix.extend_from_slice(&wire(pdf.len()).to_le_bytes());
+    prefix.extend_from_slice(trimmed.as_bytes());
+    Ok(prefix)
+}
+
+/// Reads exactly one confined PDF text-search reply (`GTPR`) and then EOF.
+pub fn read_search_reply(mut input: impl Read) -> io::Result<Result<PdfSearchReply, ErrorKind>> {
+    let mut prefix = [0; REPLY_PREFIX_BYTES];
+    input.read_exact(&mut prefix)?;
+    if prefix[..4] != SEARCH_REPLY_MAGIC {
+        return Err(unreadable("the search reply has the wrong magic"));
+    }
+    if u32_at(&prefix, 4) != PROTOCOL_VERSION {
+        return Err(unreadable("the search reply has another protocol version"));
+    }
+    let reply = match prefix[8] {
+        STATUS_SEARCH => Ok(read_search_body(&mut input)?),
+        STATUS_FAILED => {
+            let mut failure = [0; FAILURE_BYTES];
+            input.read_exact(&mut failure)?;
+            Err(ErrorKind::from_code(failure[0], u32_at(&failure, 1))
+                .ok_or_else(|| unreadable("the search reply has an unknown error kind"))?)
+        }
+        _ => return Err(unreadable("the search reply has an unknown status")),
     };
+    if input.read(&mut [0])? != 0 {
+        return Err(unreadable("the search reply is followed by more bytes"));
+    }
+    Ok(reply)
+}
+
+fn read_search_body(input: &mut impl Read) -> io::Result<PdfSearchReply> {
+    let mut header = [0; SEARCH_HEADER_BYTES];
+    input.read_exact(&mut header)?;
+    let page_count = u32_at(&header, 0) as usize;
+    let pages_scanned = u32_at(&header, 4) as usize;
+    let match_entries = u32_at(&header, 8) as usize;
+    let truncated = header[12];
+    if !(1..=MAX_PDF_PAGES).contains(&page_count)
+        || pages_scanned > page_count
+        || pages_scanned > MAX_PDF_SEARCH_PAGES
+        || match_entries > MAX_PDF_SEARCH_MATCHES
+        || truncated > 1
+    {
+        return Err(unreadable("the search reply header is out of bounds"));
+    }
+    let mut matches = Vec::with_capacity(match_entries);
+    let mut last_page: Option<usize> = None;
+    for _ in 0..match_entries {
+        let mut entry = [0; 12];
+        input.read_exact(&mut entry)?;
+        let page = u32_at(&entry, 0) as usize;
+        let match_count = u32_at(&entry, 4) as usize;
+        let snippet_len = u32_at(&entry, 8) as usize;
+        if page >= pages_scanned
+            || last_page.is_some_and(|prev| page <= prev)
+            || match_count == 0
+            || snippet_len > MAX_PDF_SEARCH_SNIPPET_BYTES
+        {
+            return Err(unreadable("a search reply match entry is out of bounds"));
+        }
+        last_page = Some(page);
+        let mut snippet_bytes = vec![0; snippet_len];
+        input.read_exact(&mut snippet_bytes)?;
+        let raw_snippet = String::from_utf8(snippet_bytes)
+            .map_err(|_| unreadable("a search reply snippet is not UTF-8"))?;
+        let snippet: String = raw_snippet
+            .chars()
+            .filter(|ch| {
+                !ch.is_control()
+                    && !matches!(
+                        *ch,
+                        '\u{202A}'..='\u{202E}'
+                            | '\u{2066}'..='\u{2069}'
+                            | '\u{200E}'
+                            | '\u{200F}'
+                            | '\u{061C}'
+                    )
+            })
+            .collect();
+        matches.push(PdfSearchMatch {
+            page,
+            match_count,
+            snippet,
+        });
+    }
+    Ok(PdfSearchReply {
+        page_count,
+        pages_scanned,
+        truncated: truncated == 1,
+        matches,
+    })
+}
+
+fn write_search_reply(
+    output: &mut impl Write,
+    reply: &Result<PdfSearchReply, ErrorKind>,
+) -> io::Result<()> {
+    let mut buf = Vec::with_capacity(REPLY_PREFIX_BYTES + SEARCH_HEADER_BYTES);
+    buf.extend_from_slice(&SEARCH_REPLY_MAGIC);
+    buf.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    let body = match reply {
+        Err(kind) => {
+            let (code, detail) = kind.code();
+            buf.push(STATUS_FAILED);
+            buf.push(code);
+            buf.extend_from_slice(&detail.to_le_bytes());
+            return output.write_all(&buf);
+        }
+        Ok(body) => body,
+    };
+    buf.push(STATUS_SEARCH);
+    buf.extend_from_slice(&wire(body.page_count).to_le_bytes());
+    buf.extend_from_slice(&wire(body.pages_scanned).to_le_bytes());
+    buf.extend_from_slice(&wire(body.matches.len()).to_le_bytes());
+    buf.push(u8::from(body.truncated));
+    for found in &body.matches {
+        buf.extend_from_slice(&wire(found.page).to_le_bytes());
+        buf.extend_from_slice(&wire(found.match_count).to_le_bytes());
+        buf.extend_from_slice(&wire(found.snippet.len()).to_le_bytes());
+        buf.extend_from_slice(found.snippet.as_bytes());
+    }
+    output.write_all(&buf)
+}
 
 struct SubSlice<B> {
     buffer: B,
@@ -241,6 +383,20 @@ pub fn serve_buffer<B: AsRef<[u8]> + Send + Sync + 'static>(
     };
     if magic == image_helper::REQUEST_MAGIC {
         return image_helper::serve_slice(&slice[4..], output);
+    }
+    if magic == SEARCH_REQUEST_MAGIC {
+        let reply = parse_pdf_search_buffer(slice).and_then(|(query, pdf_start, length)| {
+            let data = std::sync::Arc::new(SubSlice {
+                buffer,
+                start: pdf_start,
+                len: length,
+            });
+            let pdf = hayro::hayro_syntax::PdfData::from(data);
+            catch_unwind(AssertUnwindSafe(|| pdf_hayro::search_data(pdf, &query)))
+                .unwrap_or(Err(ErrorKind::RendererFailed))
+        });
+        write_search_reply(&mut output, &reply)?;
+        return output.flush();
     }
     if magic != REQUEST_MAGIC {
         write_reply(&mut output, &Err(ErrorKind::Request))?;
@@ -287,6 +443,86 @@ fn parse_pdf_buffer_header(slice: &[u8]) -> Result<(usize, usize), ErrorKind> {
     Ok((page, length))
 }
 
+fn parse_pdf_search_buffer(slice: &[u8]) -> Result<(String, usize, usize), ErrorKind> {
+    let header = slice
+        .get(4..SEARCH_REQUEST_HEADER_BYTES)
+        .ok_or(ErrorKind::Request)?;
+    if u32_at(header, 0) != PROTOCOL_VERSION {
+        return Err(ErrorKind::Request);
+    }
+    let query_len = u32_at(header, 4) as usize;
+    let pdf_len = u32_at(header, 8) as usize;
+    if query_len == 0 || query_len > MAX_PDF_SEARCH_QUERY_BYTES {
+        return Err(ErrorKind::Request);
+    }
+    if pdf_len > MAX_INPUT_BYTES {
+        return Err(ErrorKind::InputTooLarge);
+    }
+    if pdf_len < PDF_SIGNATURE.len() {
+        return Err(ErrorKind::NotPdf);
+    }
+    let query_end = SEARCH_REQUEST_HEADER_BYTES + query_len;
+    let query_bytes = slice
+        .get(SEARCH_REQUEST_HEADER_BYTES..query_end)
+        .ok_or(ErrorKind::Request)?;
+    let query = std::str::from_utf8(query_bytes)
+        .map_err(|_| ErrorKind::Request)?
+        .trim();
+    if query.is_empty() || query.contains('\0') {
+        return Err(ErrorKind::Request);
+    }
+    let body = slice
+        .get(query_end..query_end + pdf_len)
+        .ok_or(ErrorKind::Request)?;
+    if !body.starts_with(PDF_SIGNATURE) {
+        return Err(ErrorKind::NotPdf);
+    }
+    Ok((query.to_owned(), query_end, pdf_len))
+}
+
+fn read_search_request(input: &mut impl Read) -> Result<(String, Vec<u8>), ErrorKind> {
+    let mut header = [0; SEARCH_REQUEST_HEADER_BYTES - 4];
+    input
+        .read_exact(&mut header)
+        .map_err(|_| ErrorKind::Request)?;
+    if u32_at(&header, 0) != PROTOCOL_VERSION {
+        return Err(ErrorKind::Request);
+    }
+    let query_len = u32_at(&header, 4) as usize;
+    let pdf_len = u32_at(&header, 8) as usize;
+    if query_len == 0 || query_len > MAX_PDF_SEARCH_QUERY_BYTES {
+        return Err(ErrorKind::Request);
+    }
+    if pdf_len > MAX_INPUT_BYTES {
+        return Err(ErrorKind::InputTooLarge);
+    }
+    if pdf_len < PDF_SIGNATURE.len() {
+        return Err(ErrorKind::NotPdf);
+    }
+    let mut query_bytes = vec![0; query_len];
+    input
+        .read_exact(&mut query_bytes)
+        .map_err(|_| ErrorKind::Request)?;
+    let query = String::from_utf8(query_bytes).map_err(|_| ErrorKind::Request)?;
+    let trimmed = query.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err(ErrorKind::Request);
+    }
+    let mut signature = [0; PDF_SIGNATURE.len()];
+    input
+        .read_exact(&mut signature)
+        .map_err(|_| ErrorKind::Request)?;
+    if &signature != PDF_SIGNATURE {
+        return Err(ErrorKind::NotPdf);
+    }
+    let mut pdf = vec![0; pdf_len];
+    pdf[..PDF_SIGNATURE.len()].copy_from_slice(&signature);
+    input
+        .read_exact(&mut pdf[PDF_SIGNATURE.len()..])
+        .map_err(|_| ErrorKind::Request)?;
+    Ok((trimmed.to_owned(), pdf))
+}
+
 fn serve_with(
     mut input: impl Read,
     mut output: impl Write,
@@ -297,6 +533,14 @@ fn serve_with(
         Ok(()) if magic == REQUEST_MAGIC => read_request(&mut input),
         Ok(()) if magic == image_helper::REQUEST_MAGIC => {
             return image_helper::serve(input, output);
+        }
+        Ok(()) if magic == SEARCH_REQUEST_MAGIC => {
+            let reply = read_search_request(&mut input).and_then(|(query, pdf)| {
+                catch_unwind(AssertUnwindSafe(|| pdf_hayro::search(pdf, &query)))
+                    .unwrap_or(Err(ErrorKind::RendererFailed))
+            });
+            write_search_reply(&mut output, &reply)?;
+            return output.flush();
         }
         _ => Err(ErrorKind::Request),
     }
@@ -825,13 +1069,12 @@ mod tests {
 
     #[test]
     fn pdf_frames_keep_their_layout_and_an_unknown_magic_is_refused() {
-        // Version 2 added the image frame; the PDF frames are byte-for-byte
-        // version 1's apart from the version field.
-        assert_eq!(PROTOCOL_VERSION, 2);
+        // Version 2 added the image frame; version 3 added the PDF text-search frame (`GTPS`/`GTPR`).
+        assert_eq!(PROTOCOL_VERSION, 3);
         let source = pdf(1);
         let header = encode_request(7, &source).unwrap();
         assert_eq!(&header[..4], b"GTPq");
-        assert_eq!(u32_at(&header, 4), 2);
+        assert_eq!(u32_at(&header, 4), 3);
         assert_eq!(u32_at(&header, 8), 7);
         assert_eq!(u32_at(&header, 12) as usize, source.len());
         let reply = page_reply(2, 2, present("text"));
@@ -914,5 +1157,28 @@ mod tests {
         reply.clear();
         serve_buffer(not_pdf, &mut reply).unwrap();
         assert_eq!(failure(&reply), ErrorKind::NotPdf);
+    }
+
+    #[test]
+    fn search_frame_round_trips_through_stream_and_buffer_helpers() {
+        let source = pdf(2);
+        let mut frame = encode_search_request("page", &source).unwrap();
+        frame.extend_from_slice(&source);
+
+        let mut stream_out = Vec::new();
+        serve(io::Cursor::new(&frame), &mut stream_out).unwrap();
+        let stream_reply = read_search_reply(io::Cursor::new(&stream_out))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stream_reply.page_count, 2);
+        assert_eq!(stream_reply.pages_scanned, 2);
+        assert!(!stream_reply.truncated);
+
+        let mut buf_out = Vec::new();
+        serve_buffer(frame, &mut buf_out).unwrap();
+        let buf_reply = read_search_reply(io::Cursor::new(&buf_out))
+            .unwrap()
+            .unwrap();
+        assert_eq!(buf_reply, stream_reply);
     }
 }

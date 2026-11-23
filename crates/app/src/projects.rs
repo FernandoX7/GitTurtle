@@ -36,6 +36,7 @@ pub enum ProjectEvent {
     Clone {
         source: String,
         destination: PathBuf,
+        options: gitturtle_core::CloneOptions,
     },
     Create {
         destination: PathBuf,
@@ -59,6 +60,8 @@ struct FormInputs {
     parent: Entity<InputState>,
     name: Entity<InputState>,
     branch: Entity<InputState>,
+    clone_depth: Entity<InputState>,
+    clone_branch: Entity<InputState>,
 }
 
 pub struct ProjectHub {
@@ -79,6 +82,8 @@ pub struct ProjectHub {
     suggested_name: Option<String>,
     mode: ProjectMode,
     pending_mode: Option<ProjectMode>,
+    clone_options_open: bool,
+    clone_recurse_submodules: bool,
     busy: bool,
     picker_pending: bool,
     can_go_back: bool,
@@ -140,6 +145,8 @@ impl ProjectHub {
             suggested_name: None,
             mode: ProjectMode::Open,
             pending_mode: None,
+            clone_options_open: false,
+            clone_recurse_submodules: false,
             busy: false,
             picker_pending: false,
             can_go_back: false,
@@ -200,6 +207,11 @@ impl ProjectHub {
                     .placeholder("main")
                     .default_value(default_branch)
             });
+            let clone_depth = cx.new(|cx| {
+                InputState::new(window, cx).placeholder("Full history (e.g. 1 for shallow)")
+            });
+            let clone_branch =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Remote default branch"));
             self.subscriptions.push(cx.subscribe_in(
                 &source,
                 window,
@@ -211,7 +223,7 @@ impl ProjectHub {
                     }
                 },
             ));
-            for input in [&parent, &name] {
+            for input in [&parent, &name, &clone_depth, &clone_branch] {
                 self.subscriptions
                     .push(cx.subscribe_in(input, window, |this, _, event, _, cx| {
                         if let InputEvent::Change = event {
@@ -234,6 +246,8 @@ impl ProjectHub {
                 parent,
                 name,
                 branch,
+                clone_depth,
+                clone_branch,
             });
         }
         self.form_inputs
@@ -787,9 +801,30 @@ impl ProjectHub {
                 ProjectMode::Clone => {
                     let source = form.source.read(cx).value().trim().to_string();
                     validate_source(&source)?;
+                    let depth_raw = form.clone_depth.read(cx).value().trim().to_string();
+                    let depth = if depth_raw.is_empty() {
+                        None
+                    } else {
+                        match depth_raw.parse::<u32>() {
+                            Ok(n) if n >= 1 => Some(n),
+                            _ => return Err("Clone depth must be a positive whole number.".into()),
+                        }
+                    };
+                    let branch_raw = form.clone_branch.read(cx).value().trim().to_string();
+                    let branch = if branch_raw.is_empty() {
+                        None
+                    } else {
+                        validate_branch(&branch_raw)?;
+                        Some(branch_raw)
+                    };
                     Ok(ProjectEvent::Clone {
                         source,
                         destination,
+                        options: gitturtle_core::CloneOptions {
+                            depth,
+                            branch,
+                            recurse_submodules: self.clone_recurse_submodules,
+                        },
                     })
                 }
                 ProjectMode::Create => {
@@ -1530,6 +1565,74 @@ impl ProjectHub {
                                     .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                             ),
                     )
+                    .when(self.mode == ProjectMode::Clone, |panel| {
+                        let open = self.clone_options_open;
+                        let chevron = if open {
+                            "chevron-down"
+                        } else {
+                            "chevron-right"
+                        };
+                        panel
+                            .child(
+                                div().flex().items_center().child(
+                                    crate::button(
+                                        "clone-options-toggle",
+                                        "Clone options",
+                                        chevron,
+                                        false,
+                                    )
+                                    .toggled(open)
+                                    .accessibility_label(if open {
+                                        "Hide clone options"
+                                    } else {
+                                        "Show clone options"
+                                    })
+                                    .debug_selector(|| "clone-options-toggle".into())
+                                    .disabled(self.unavailable())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.clone_options_open = !this.clone_options_open;
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                            )
+                            .when(open, |panel| {
+                                panel.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_3()
+                                        .p_3()
+                                        .rounded(px(7.))
+                                        .bg(colors.background)
+                                        .child(self.field(
+                                            "Shallow depth (optional)",
+                                            &form.clone_depth,
+                                            cx,
+                                        ))
+                                        .child(self.field(
+                                            "Branch to check out (optional)",
+                                            &form.clone_branch,
+                                            cx,
+                                        ))
+                                        .child(
+                                            gpui_kit::component::checkbox::Checkbox::new(
+                                                "clone-recurse-submodules",
+                                            )
+                                            .label("Clone submodules (--recurse-submodules)")
+                                            .checked(self.clone_recurse_submodules)
+                                            .disabled(self.unavailable())
+                                            .on_click(
+                                                cx.listener(|this, checked, _, cx| {
+                                                    this.clone_recurse_submodules = *checked;
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                        ),
+                                )
+                            })
+                    })
             })
             .children(form_feedback)
             .into_any_element()
@@ -3099,8 +3202,8 @@ mod tests {
         draw(cx);
         assert_eq!(
             formatted(),
-            before,
-            "Clone's panel and submit draw its tab's symbol, kept"
+            before + 1,
+            "Clone's panel and submit reuse its tab's symbol; only the disclosure chevron is new"
         );
         let clone = at_rest("Clone", cx);
         assert!(

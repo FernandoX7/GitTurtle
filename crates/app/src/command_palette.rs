@@ -28,6 +28,20 @@ pub(super) enum CommandId {
     FetchPrune,
     FetchAll,
     FetchAllPrune,
+    PullWithOptions,
+    CommitAndPush,
+    ApplyPatch,
+    ExportRangePatch,
+    StartBisect,
+    SearchPdfDocument,
+    ToggleDiffWordWrap,
+    DiffAlgorithmPatience,
+    DiffAlgorithmMyers,
+    DiffAlgorithmHistogram,
+    TabWidth2,
+    TabWidth4,
+    TabWidth8,
+    RunCustomCommand,
     Branch,
     Worktrees,
     Tags,
@@ -346,6 +360,90 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         "version build native git client",
         None
     ),
+    command!(
+        PullWithOptions,
+        "Pull with options…",
+        "pull strategy merge rebase fast-forward remote sync",
+        None
+    ),
+    command!(
+        CommitAndPush,
+        "Commit & Push",
+        "commit staged push remote sync",
+        None
+    ),
+    command!(
+        ApplyPatch,
+        "Apply .patch file…",
+        "patch apply diff three-way index import",
+        None
+    ),
+    command!(
+        ExportRangePatch,
+        "Export comparison as .patch…",
+        "format-patch export diff range save",
+        None
+    ),
+    command!(
+        StartBisect,
+        "Start git bisect…",
+        "bisect regression good bad binary search",
+        None
+    ),
+    command!(
+        SearchPdfDocument,
+        "Search PDF document…",
+        "pdf find search pages text",
+        None
+    ),
+    command!(
+        ToggleDiffWordWrap,
+        "Toggle diff word wrap",
+        "diff wrap lines soft wrap editor",
+        None
+    ),
+    command!(
+        DiffAlgorithmPatience,
+        "Use Patience diff",
+        "diff patience line matching",
+        None
+    ),
+    command!(
+        DiffAlgorithmMyers,
+        "Use Myers diff",
+        "diff myers line matching",
+        None
+    ),
+    command!(
+        DiffAlgorithmHistogram,
+        "Use Histogram diff",
+        "diff histogram line matching",
+        None
+    ),
+    command!(
+        TabWidth2,
+        "Tab width: 2 spaces",
+        "tab size indent 2 code diff",
+        None
+    ),
+    command!(
+        TabWidth4,
+        "Tab width: 4 spaces",
+        "tab size indent 4 code diff",
+        None
+    ),
+    command!(
+        TabWidth8,
+        "Tab width: 8 spaces",
+        "tab size indent 8 code diff",
+        None
+    ),
+    command!(
+        RunCustomCommand,
+        "Run custom command…",
+        "custom command tool script external",
+        None
+    ),
 ];
 
 #[derive(Clone, Default)]
@@ -401,6 +499,20 @@ impl CommandId {
                 | Self::FetchPrune
                 | Self::FetchAll
                 | Self::FetchAllPrune
+                | Self::PullWithOptions
+                | Self::CommitAndPush
+                | Self::ApplyPatch
+                | Self::ExportRangePatch
+                | Self::StartBisect
+                | Self::SearchPdfDocument
+                | Self::ToggleDiffWordWrap
+                | Self::DiffAlgorithmPatience
+                | Self::DiffAlgorithmMyers
+                | Self::DiffAlgorithmHistogram
+                | Self::TabWidth2
+                | Self::TabWidth4
+                | Self::TabWidth8
+                | Self::RunCustomCommand
                 | Self::Branch
                 | Self::Worktrees
                 | Self::GitHub
@@ -484,6 +596,12 @@ impl CommandId {
                     | Self::FetchPrune
                     | Self::FetchAll
                     | Self::FetchAllPrune
+                    | Self::PullWithOptions
+                    | Self::CommitAndPush
+                    | Self::ApplyPatch
+                    | Self::ExportRangePatch
+                    | Self::StartBisect
+                    | Self::RunCustomCommand
             )
         {
             return Some(crate::branch_actions::UNAVAILABLE_REASON);
@@ -890,6 +1008,63 @@ impl GitTurtle {
             CommandId::FetchPrune => self.fetch_remote_with_prune(true, window, cx),
             CommandId::FetchAll => self.fetch_all_remotes(false, window, cx),
             CommandId::FetchAllPrune => self.fetch_all_remotes(true, window, cx),
+            CommandId::PullWithOptions => self.open_pull_options_dialog(window, cx),
+            CommandId::CommitAndPush => self.commit_and_push(window, cx),
+            CommandId::ApplyPatch => self.apply_patch_dialog(window, cx),
+            CommandId::ExportRangePatch => {
+                if let Some((before, after)) = self.revision_inspection.comparison_range() {
+                    self.export_range_as_patch_dialog(before, after, window, cx);
+                } else if let Some(commit) = self.selected_commit.and_then(|i| self.commits.get(i))
+                {
+                    if let Some(before) = commit.parents.first().cloned() {
+                        self.export_range_as_patch_dialog(before, commit.oid.clone(), window, cx);
+                    } else {
+                        self.operation_error = Some(
+                            "Root commits have no parent range to export. Use Copy commit patch from the commit menu."
+                                .into(),
+                        );
+                        cx.notify();
+                    }
+                }
+            }
+            CommandId::StartBisect => {
+                let bad = self
+                    .selected_commit
+                    .and_then(|i| self.commits.get(i))
+                    .map(|c| c.oid.clone());
+                self.open_start_bisect_dialog(bad, window, cx);
+            }
+            CommandId::SearchPdfDocument => {
+                if let Some(Content::Rich(comparison)) = self.content.as_deref() {
+                    if let Some(pdf) = comparison.new.pdf.clone() {
+                        pdf_view::search_document_dialog(
+                            pdf,
+                            comparison.old.pdf.clone(),
+                            "After",
+                            window,
+                            cx,
+                        );
+                    } else if let Some(pdf) = comparison.old.pdf.clone() {
+                        pdf_view::search_document_dialog(pdf, None, "Before", window, cx);
+                    }
+                }
+            }
+            CommandId::ToggleDiffWordWrap => {
+                self.set_diff_word_wrap(!self.settings.diff_word_wrap, window, cx);
+            }
+            CommandId::DiffAlgorithmPatience => {
+                self.set_diff_algorithm_pref(preferences::DiffAlgorithmPref::Patience, window, cx);
+            }
+            CommandId::DiffAlgorithmMyers => {
+                self.set_diff_algorithm_pref(preferences::DiffAlgorithmPref::Myers, window, cx);
+            }
+            CommandId::DiffAlgorithmHistogram => {
+                self.set_diff_algorithm_pref(preferences::DiffAlgorithmPref::Histogram, window, cx);
+            }
+            CommandId::TabWidth2 => self.set_tab_width_pref(2, window, cx),
+            CommandId::TabWidth4 => self.set_tab_width_pref(4, window, cx),
+            CommandId::TabWidth8 => self.set_tab_width_pref(8, window, cx),
+            CommandId::RunCustomCommand => self.open_run_custom_command_dialog(window, cx),
             CommandId::Branch => {
                 if let Some(branch) = self.palette_branch().map(str::to_owned) {
                     self.open_contextual_branch(branch, false, window, cx);
@@ -1677,6 +1852,7 @@ impl Render for Palette {
             .on_action(|_: &CompareRevisions, _, cx| cx.stop_propagation())
             .on_action(|_: &JumpToHead, _, cx| cx.stop_propagation())
             .on_action(|_: &JumpToRevision, _, cx| cx.stop_propagation())
+            .on_action(|_: &CommitStaged, _, cx| cx.stop_propagation())
             .on_action(|_: &ShowActivity, _, cx| cx.stop_propagation())
             .on_action(|_: &OpenRepository, _, cx| cx.stop_propagation())
             .on_action(|_: &BackHistory, _, cx| cx.stop_propagation())

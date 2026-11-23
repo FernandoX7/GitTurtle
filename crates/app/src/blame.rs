@@ -1037,14 +1037,16 @@ impl GitTurtle {
     }
 
     fn render_blame_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(line) = self
-            .blame
-            .data
-            .as_ref()
-            .and_then(|data| data.lines.get(index))
-        else {
+        let Some(data) = self.blame.data.as_ref() else {
             return div().into_any_element();
         };
+        let Some(line) = data.lines.get(index) else {
+            return div().into_any_element();
+        };
+        let digits = data.lines.len().max(1).ilog10() as usize + 1;
+        let line_no_width =
+            crate::appearance::ui_size((digits.max(3) as f32 * 7.5 + 16.).clamp(40., 76.));
+        let attribution_width = crate::appearance::ui_size(180.).clamp(px(120.), px(260.));
         let p = palette(cx);
         let selected = self.blame.selected == Some(index);
         let label = line.attribution.as_ref().map_or_else(
@@ -1080,7 +1082,7 @@ impl GitTurtle {
             .cursor_pointer()
             .child(
                 div()
-                    .w(px(44.))
+                    .w(line_no_width)
                     .flex_shrink_0()
                     .text_right()
                     .text_size(crate::appearance::ui_text(10.))
@@ -1089,7 +1091,7 @@ impl GitTurtle {
             )
             .child(
                 div()
-                    .w(px(180.))
+                    .w(attribution_width)
                     .flex_shrink_0()
                     .truncate()
                     .text_size(crate::appearance::ui_text(10.))

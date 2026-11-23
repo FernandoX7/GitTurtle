@@ -12572,7 +12572,7 @@ async fn reveals_draw_the_pr_rows_and_the_files_boxes_rings_whole(cx: &mut TestA
                 "a clip cuts the right, bottom, left",
             ),
             (
-                "Connection by shift-tab at 18 pt, stop 5 by Shift+Tab (",
+                "Connection by shift-tab at 18 pt, stop 6 by Shift+Tab (",
                 "a clip cuts the right, bottom, left",
             ),
         ],
@@ -24389,6 +24389,8 @@ async fn inspecting_pr_and_closing_panel_does_not_save_empty_review_draft(cx: &m
                 .update(cx, |input, cx| input.set_value("fixture/repo", window, cx));
             panel.pull = Some(PullRequest {
                 number: 42,
+                node_id: None,
+                html_url: None,
                 title: "Clean PR".into(),
                 body: Some("A very long single-line description without hard line breaks.".into()),
                 draft: false,
@@ -24396,6 +24398,11 @@ async fn inspecting_pr_and_closing_panel_does_not_save_empty_review_draft(cx: &m
                 user: github::User {
                     login: "octocat".into(),
                 },
+                labels: Vec::new(),
+                requested_reviewers: Vec::new(),
+                created_at: None,
+                updated_at: None,
+                merged_at: None,
                 head: github::Revision {
                     branch: "feature".into(),
                     sha: "1111111111111111111111111111111111111111".into(),

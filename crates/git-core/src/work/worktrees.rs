@@ -223,7 +223,10 @@ impl GitRepository {
             ] {
                 match std::fs::symlink_metadata(directories.0.join(file)) {
                     Ok(_) => match label {
-                        Some(label) if status.operation.is_none() || file != "sequencer" => {
+                        Some(label)
+                            if (status.operation.is_none() || file != "sequencer")
+                                && !operation_state.iter().any(|existing| existing == label) =>
+                        {
                             operation_state.push(label.into())
                         }
                         Some(_) => {}

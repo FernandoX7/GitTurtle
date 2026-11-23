@@ -651,6 +651,33 @@ impl GitTurtle {
         }
         // Either palette takes More contrast while it is on.
         self.applied_contrast = appearance::more_contrast(cx);
+        let dark_mermaid = gpui_kit::component::Theme::global(cx).mode.is_dark();
+        let mermaid_mode_changed = self.worker.preview_options().dark_mermaid != dark_mermaid;
+        self.worker.set_dark_mermaid(dark_mermaid);
+        if mermaid_mode_changed
+            && self.page == AppPage::Repository
+            && matches!(
+                self.content.as_deref(),
+                Some(Content::Text {
+                    diagrams: Some(_),
+                    ..
+                })
+            )
+        {
+            match self.mode {
+                WorkspaceMode::Compare => {
+                    if let Some(index) = self.selected_file {
+                        self.load_file(index, window, cx);
+                    }
+                }
+                WorkspaceMode::Working => {
+                    if let Some((index, area)) = self.working_selected {
+                        self.select_working(index, area, window, cx);
+                    }
+                }
+                WorkspaceMode::History => {}
+            }
+        }
         #[cfg(test)]
         APPEARANCE_APPLIED.with(|applied| applied.set(applied.get() + 1));
         appearance::sync_text_sizes(

@@ -805,6 +805,7 @@ impl GitTurtle {
                 partial,
                 split,
                 split_partial,
+                structured,
                 ..
             } = content.as_ref()
             {
@@ -824,6 +825,14 @@ impl GitTurtle {
                 }
                 if let Some(editor) = &self.after_editor {
                     text::refresh_editor(editor, new, None, window, cx);
+                }
+                if let Some(editor) = &self.formatted_editor {
+                    if let Some(formatted) = structured.as_ref().and_then(|s| s.display_text().ok())
+                    {
+                        text::refresh_editor(editor, formatted, None, window, cx);
+                    } else {
+                        self.formatted_editor = None;
+                    }
                 }
                 if let Some(view) = &self.patch_view {
                     view.update(cx, |view, cx| {

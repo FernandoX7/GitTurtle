@@ -9,9 +9,9 @@ use super::session::{
 #[cfg(test)]
 use super::types::Lane;
 use super::types::{
-    Content, HistoryReferences, ImageMetadata, ImageSide, Job, MissingScope, Output, QuietHistory,
-    QuietPreview, QuietRefresh, Scope, SearchResult, Snapshot, VanishedScope, WorkingSelection,
-    WorkingState,
+    Content, HistoryReferences, ImageMetadata, ImageSide, Job, MissingScope, Output,
+    PreviewRuntimeSnapshot, QuietHistory, QuietPreview, QuietRefresh, Scope, SearchResult,
+    Snapshot, VanishedScope, WorkingSelection, WorkingState,
 };
 use super::{Cancellation, PREVIEW_EDGE};
 #[cfg(test)]
@@ -38,9 +38,10 @@ pub(super) fn execute(
     cancellation: &Cancellation,
     session: &mut RepositorySession,
 ) -> Result<Output> {
+    let options = PreviewRuntimeSnapshot::default();
     match job.lane() {
-        Lane::Metadata => execute_metadata(job, cancellation, session),
-        Lane::Preview => execute_preview(job, cache, cancellation),
+        Lane::Metadata => execute_metadata(job, options, cancellation, session),
+        Lane::Preview => execute_preview(job, options, cache, cancellation),
     }
 }
 
@@ -100,6 +101,7 @@ fn search_tracked_paths_cached(
 
 pub(super) fn execute_metadata(
     job: Job,
+    options: PreviewRuntimeSnapshot,
     cancellation: &Cancellation,
     session: &mut RepositorySession,
 ) -> Result<Output> {
@@ -352,6 +354,7 @@ pub(super) fn execute_metadata(
                         area,
                         working.status.head.as_deref(),
                         prepare_split,
+                        options,
                         cancellation,
                     )?;
                     // If an external `git add` raced between WorkingState::read
@@ -391,6 +394,7 @@ pub(super) fn execute_metadata(
                             fresh_area,
                             working.status.head.as_deref(),
                             prepare_split,
+                            options,
                             cancellation,
                         )?;
                         area = fresh_area;
@@ -482,6 +486,7 @@ pub(super) fn execute_metadata(
 
 pub(super) fn execute_preview(
     job: Job,
+    options: PreviewRuntimeSnapshot,
     cache: &mut PreviewCache,
     cancellation: &Cancellation,
 ) -> Result<Output> {
@@ -529,7 +534,8 @@ pub(super) fn execute_preview(
                         _ => None,
                     },
                 );
-                let content = prepare_preview(&repo, &file, &origins, false, cache, cancellation)?;
+                let content =
+                    prepare_preview(&repo, &file, &origins, false, options, cache, cancellation)?;
                 return Ok(Output::TrackedPreview {
                     mode,
                     content,
@@ -563,7 +569,7 @@ pub(super) fn execute_preview(
                 prepared_text(String::new(), String::new(), source, false)
             };
             lfs.mark(&mut content);
-            attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+            attach_mermaid(&mut content, &file, lfs.pointers, options, cancellation)?;
             attach_markdown_assets(
                 &mut content,
                 &repo,
@@ -594,6 +600,7 @@ pub(super) fn execute_preview(
                 area,
                 head.as_deref(),
                 prepare_split,
+                options,
                 cancellation,
             )?;
             Ok(Output::WorkingPreview(file, content, start.elapsed()))
@@ -604,8 +611,15 @@ pub(super) fn execute_preview(
             origins,
             prepare_split,
         } => {
-            let content =
-                prepare_preview(&repo, &file, &origins, prepare_split, cache, cancellation)?;
+            let content = prepare_preview(
+                &repo,
+                &file,
+                &origins,
+                prepare_split,
+                options,
+                cache,
+                cancellation,
+            )?;
             Ok(Output::Preview(content, start.elapsed()))
         }
         _ => anyhow::bail!("Metadata job routed to preview lane"),
@@ -618,6 +632,7 @@ fn prepare_working_preview(
     area: gitturtle_core::ChangeArea,
     head: Option<&str>,
     prepare_split: bool,
+    options: PreviewRuntimeSnapshot,
     cancellation: &Cancellation,
 ) -> Result<(FileChange, Arc<Content>)> {
     if entry.conflicted {
@@ -646,7 +661,7 @@ fn prepare_working_preview(
             )),
         ));
     }
-    let preview = repo.worktree_preview(entry, area)?;
+    let preview = repo.worktree_preview_with_algorithm(entry, area, options.diff_algorithm)?;
     cancellation.check()?;
     let file = preview.file;
     let mut partial_diff = preview.partial;
@@ -696,7 +711,7 @@ fn prepare_working_preview(
     };
     lfs.mark(&mut content);
     cancellation.check()?;
-    attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+    attach_mermaid(&mut content, &file, lfs.pointers, options, cancellation)?;
     let origins = match area {
         gitturtle_core::ChangeArea::Staged => crate::markdown_view::Origins {
             old: head.map(|oid| gitturtle_core::PreviewAssetScope::Revision(oid.to_owned())),
@@ -747,6 +762,7 @@ fn prepare_preview(
     file: &FileChange,
     origins: &crate::markdown_view::Origins,
     prepare_split: bool,
+    options: PreviewRuntimeSnapshot,
     cache: &mut PreviewCache,
     cancellation: &Cancellation,
 ) -> Result<Arc<Content>> {
@@ -756,10 +772,11 @@ fn prepare_preview(
             file,
             origins,
             prepare_split,
+            options,
             cancellation,
         );
     }
-    let key = PreviewKey::with_origins(repo.path(), file, origins.clone());
+    let key = PreviewKey::with_options(repo.path(), file, origins.clone(), options);
     if let Some(content) = cache.get(&key) {
         if prepare_split
             && matches!(content.as_ref(), Content::Text { split: None, .. })
@@ -772,7 +789,7 @@ fn prepare_preview(
         return Ok(content);
     }
     let mut lfs = LfsSides::default();
-    let mut content = text_content(repo, file, &mut lfs, prepare_split, cancellation)?;
+    let mut content = text_content(repo, file, &mut lfs, prepare_split, options, cancellation)?;
     attach_markdown_assets(&mut content, repo, file, origins, cancellation)?;
     let cacheable = !lfs.store_can_change()
         && match &content {
@@ -803,10 +820,11 @@ fn prepare_revision_vs_working_preview(
     file: &FileChange,
     origins: &crate::markdown_view::Origins,
     prepare_split: bool,
+    options: PreviewRuntimeSnapshot,
     cancellation: &Cancellation,
 ) -> Result<Arc<Content>> {
     cancellation.check()?;
-    let preview = repo.preview_revision_vs_working(file)?;
+    let preview = repo.preview_revision_vs_working_with_algorithm(file, options.diff_algorithm)?;
     cancellation.check()?;
     let file = preview.file;
     let mut lfs = LfsSides::default();
@@ -852,7 +870,7 @@ fn prepare_revision_vs_working_preview(
     };
     lfs.mark(&mut content);
     cancellation.check()?;
-    attach_mermaid(&mut content, &file, lfs.pointers, cancellation)?;
+    attach_mermaid(&mut content, &file, lfs.pointers, options, cancellation)?;
     attach_markdown_assets(&mut content, repo, &file, origins, cancellation)?;
     Ok(Arc::new(content))
 }
@@ -913,7 +931,7 @@ pub(super) fn read_snapshot(
     // page, and the scope joins it, whatever the page's outcome, before returning.
     let (
         (commits, graph, graph_notice, history_scope, history_next_offset),
-        (refs, tags, tags_truncated, stashes),
+        (refs, tags, tags_truncated, stashes, submodules),
     ) = std::thread::scope(|threads| -> Result<_> {
         let references = || snapshot_sidebar_refs(&repository, &branches, cancellation);
         let beside = std::thread::Builder::new()
@@ -961,6 +979,7 @@ pub(super) fn read_snapshot(
         tags,
         tags_truncated,
         stashes,
+        submodules,
         commits,
         history_scope,
         history_offset: 0,
@@ -988,6 +1007,7 @@ type SidebarRefs = (
     Vec<gitturtle_core::Tag>,
     bool,
     Vec<gitturtle_core::StashEntry>,
+    Vec<gitturtle_core::SubmoduleSummary>,
 );
 
 fn snapshot_sidebar_refs(
@@ -1012,8 +1032,17 @@ fn snapshot_sidebar_refs(
         .unwrap_or_default()
     };
     cancellation.check()?;
+    let submodules = if repository.is_bare() {
+        Vec::new()
+    } else {
+        gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+            repository.submodules()
+        })
+        .unwrap_or_default()
+    };
+    cancellation.check()?;
     let refs = HistoryReferences::new(branches, &tags);
-    Ok((refs, tags, tags_truncated, stashes))
+    Ok((refs, tags, tags_truncated, stashes, submodules))
 }
 
 #[cfg(test)]
@@ -1379,6 +1408,8 @@ pub(super) fn prepared_text(
     Content::Text {
         diagrams: None,
         markdown: None,
+        table: None,
+        structured: None,
         patch,
         old,
         new,
@@ -1400,6 +1431,8 @@ fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
     let Content::Text {
         diagrams,
         markdown,
+        table,
+        structured,
         patch,
         old,
         new,
@@ -1427,6 +1460,8 @@ fn ensure_split_in_content(content: &Arc<Content>) -> Option<Arc<Content>> {
     Some(Arc::new(Content::Text {
         diagrams: diagrams.clone(),
         markdown: markdown.clone(),
+        table: table.clone(),
+        structured: structured.clone(),
         patch: patch.clone(),
         old: old.clone(),
         new: new.clone(),
@@ -1496,8 +1531,10 @@ fn attach_mermaid(
     content: &mut Content,
     file: &FileChange,
     stored_pointers: [bool; 2],
+    options: PreviewRuntimeSnapshot,
     cancellation: &Cancellation,
 ) -> Result<()> {
+    let mermaid_theme = options.mermaid_theme();
     if let Content::Text {
         old,
         new,
@@ -1507,11 +1544,16 @@ fn attach_mermaid(
     } = content
         && markdown.is_none()
     {
-        *markdown =
-            crate::markdown_view::prepare(old, new, file, *lfs_failed, stored_pointers, || {
-                cancellation.check()
-            })?
-            .map(Arc::new);
+        *markdown = crate::markdown_view::prepare_with_theme(
+            old,
+            new,
+            file,
+            *lfs_failed,
+            stored_pointers,
+            mermaid_theme,
+            || cancellation.check(),
+        )?
+        .map(Arc::new);
     }
     if let Content::Text {
         old,
@@ -1526,11 +1568,35 @@ fn attach_mermaid(
         *diagrams = if let Some(markdown) = markdown {
             markdown.diagrams().map(Arc::new)
         } else {
-            crate::rich_preview::prepare_mermaid(old, new, file, *lfs_failed, || {
-                cancellation.check()
-            })?
+            crate::rich_preview::prepare_mermaid_with_theme(
+                old,
+                new,
+                file,
+                *lfs_failed,
+                mermaid_theme,
+                || cancellation.check(),
+            )?
             .map(Arc::new)
         };
+    }
+    if let Content::Text {
+        old,
+        new,
+        table,
+        structured,
+        ..
+    } = content
+    {
+        cancellation.check()?;
+        if table.is_none() {
+            *table =
+                crate::structured_view::TabularComparison::prepare(old, new, file).map(Arc::new);
+        }
+        cancellation.check()?;
+        if structured.is_none() {
+            *structured =
+                crate::structured_view::StructuredComparison::prepare(old, new, file).map(Arc::new);
+        }
     }
     Ok(())
 }
@@ -1635,9 +1701,10 @@ fn text_content(
     file: &FileChange,
     lfs: &mut LfsSides,
     prepare_split: bool,
+    options: PreviewRuntimeSnapshot,
     cancellation: &Cancellation,
 ) -> Result<Content> {
-    let sources = match repo.text_preview_with_sources(file) {
+    let sources = match repo.text_preview_with_algorithm(file, options.diff_algorithm) {
         Ok(sources) => sources,
         Err(error) => {
             if let Some(content) = nontext_history_content(repo, file, [None, None], cancellation)?
@@ -1697,7 +1764,7 @@ fn text_content(
         cancellation,
     )? {
         lfs.mark(&mut content);
-        attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
+        attach_mermaid(&mut content, file, lfs.pointers, options, cancellation)?;
         return Ok(content);
     }
     let mut content = match sources.preview {
@@ -1719,7 +1786,7 @@ fn text_content(
         )),
     };
     lfs.mark(&mut content);
-    attach_mermaid(&mut content, file, lfs.pointers, cancellation)?;
+    attach_mermaid(&mut content, file, lfs.pointers, options, cancellation)?;
     Ok(content)
 }
 

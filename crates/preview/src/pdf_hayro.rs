@@ -39,8 +39,9 @@ use hayro::{RenderCache, RenderSettings, render_into};
 
 use crate::pdf_helper::{ErrorKind, PageReply, PhaseTimings};
 use crate::{
-    ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, MAX_SOURCE_EDGE,
-    PDF_PREVIEW_EDGE, PdfPageText, check_dimensions, scaled_dimensions,
+    ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, MAX_PDF_SEARCH_MATCHES,
+    MAX_PDF_SEARCH_PAGES, MAX_PDF_SEARCH_QUERY_BYTES, MAX_SOURCE_EDGE, PDF_PREVIEW_EDGE,
+    PdfPageText, PdfSearchReply, check_dimensions, scaled_dimensions, search_page_text,
 };
 
 /// A word gap wider than this share of the font size separates two words.
@@ -57,6 +58,66 @@ pub(crate) fn prepare_data(
     page: usize,
 ) -> Result<PageReply, ErrorKind> {
     prepare_with(pdf, page, extract_text)
+}
+
+pub(crate) fn search(pdf: Vec<u8>, query: &str) -> Result<PdfSearchReply, ErrorKind> {
+    search_data(hayro::hayro_syntax::PdfData::from(pdf), query)
+}
+
+pub(crate) fn search_data(
+    pdf: hayro::hayro_syntax::PdfData,
+    query: &str,
+) -> Result<PdfSearchReply, ErrorKind> {
+    let bytes: &[u8] = pdf.as_ref();
+    if bytes.len() > MAX_INPUT_BYTES {
+        return Err(ErrorKind::InputTooLarge);
+    }
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(ErrorKind::NotPdf);
+    }
+    let trimmed = query.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_PDF_SEARCH_QUERY_BYTES || trimmed.contains('\0') {
+        return Err(ErrorKind::Request);
+    }
+    let needle_lower = trimmed.to_lowercase();
+    let document = guarded(|| Pdf::new(pdf))?.map_err(|error| match error {
+        LoadPdfError::Decryption(DecryptionError::PasswordProtected) => ErrorKind::Locked,
+        LoadPdfError::Decryption(_) | LoadPdfError::Invalid => ErrorKind::Corrupt,
+    })?;
+    let pages = document.pages();
+    let page_count = pages.len();
+    if page_count == 0 {
+        return Err(ErrorKind::NoPages);
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(ErrorKind::TooManyPages);
+    }
+    let limit = page_count.min(MAX_PDF_SEARCH_PAGES);
+    let mut matches = Vec::new();
+    let mut pages_scanned = 0usize;
+    let mut truncated = page_count > MAX_PDF_SEARCH_PAGES;
+    for (page_index, page) in pages.iter().take(limit).enumerate() {
+        pages_scanned += 1;
+        let Ok(extracted) = guarded(|| extract_text(page)) else {
+            continue;
+        };
+        let Some(text) = extracted.text else {
+            continue;
+        };
+        if let Some(found) = search_page_text(page_index, &text, &needle_lower) {
+            if matches.len() >= MAX_PDF_SEARCH_MATCHES {
+                truncated = true;
+                break;
+            }
+            matches.push(found);
+        }
+    }
+    Ok(PdfSearchReply {
+        page_count,
+        pages_scanned,
+        truncated,
+        matches,
+    })
 }
 
 fn prepare_with(

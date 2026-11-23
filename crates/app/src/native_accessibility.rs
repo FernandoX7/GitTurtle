@@ -4498,6 +4498,23 @@ impl GitTurtle {
                 self.open_stashes(window, cx);
                 return;
             }
+            NavRow::Submodule(index) => {
+                if let (Some(root), Some(submodule)) =
+                    (self.path.clone(), self.submodules.get(index).cloned())
+                {
+                    if submodule.state == gitturtle_core::SubmoduleState::Uninitialized {
+                        self.operation_notice = Some(format!(
+                            "Submodule {} is not initialized. Open its context menu to initialize or update.",
+                            submodule.path.display()
+                        ));
+                        cx.notify();
+                    } else {
+                        let sub_path = root.join(&submodule.path);
+                        self.open_repository_tab(sub_path, window, cx);
+                    }
+                    return;
+                }
+            }
             NavRow::All => {
                 if let Some(path) = self.path.clone() {
                     self.open(path, None, window, cx);

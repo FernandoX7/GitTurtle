@@ -14,6 +14,7 @@ pub struct Snapshot {
     pub tags: Vec<gitturtle_core::Tag>,
     pub tags_truncated: bool,
     pub stashes: Vec<gitturtle_core::StashEntry>,
+    pub submodules: Vec<gitturtle_core::SubmoduleSummary>,
     pub commits: Vec<Commit>,
     pub history_scope: gitturtle_core::HistoryScope,
     pub history_offset: usize,
@@ -197,12 +198,32 @@ impl ImageSide {
     }
 }
 
+/// Runtime preview options captured when a preview job is submitted so dark/light
+/// Mermaid surfaces and diff algorithm choices stay cache-isolated per worker.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+pub(crate) struct PreviewRuntimeSnapshot {
+    pub(crate) dark_mermaid: bool,
+    pub(crate) diff_algorithm: gitturtle_core::DiffAlgorithm,
+}
+
+impl PreviewRuntimeSnapshot {
+    pub(crate) fn mermaid_theme(self) -> gitturtle_preview::mermaid::MermaidTheme {
+        if self.dark_mermaid {
+            gitturtle_preview::mermaid::MermaidTheme::Dark
+        } else {
+            gitturtle_preview::mermaid::MermaidTheme::Light
+        }
+    }
+}
+
 pub enum Content {
     Rich(crate::rich_preview::Comparison),
     Conflict(Arc<crate::conflicts::Presentation>),
     Text {
         diagrams: Option<Arc<crate::rich_preview::Comparison>>,
         markdown: Option<Arc<crate::markdown_view::Comparison>>,
+        table: Option<Arc<crate::structured_view::TabularComparison>>,
+        structured: Option<Arc<crate::structured_view::StructuredComparison>>,
         patch: String,
         old: String,
         new: String,
@@ -270,6 +291,8 @@ impl Content {
             Self::Text {
                 diagrams,
                 markdown,
+                table,
+                structured,
                 patch,
                 old,
                 new,
@@ -287,6 +310,8 @@ impl Content {
                     + markdown
                         .as_ref()
                         .map_or(0, |preview| preview.retained_bytes())
+                    + table.as_ref().map_or(0, |t| t.retained_bytes())
+                    + structured.as_ref().map_or(0, |s| s.retained_bytes())
                     + patch.capacity()
                     + old.capacity()
                     + new.capacity()
@@ -557,6 +582,7 @@ pub struct WorkingState {
     pub profile: Result<gitturtle_core::GitProfile>,
     pub remotes: Result<Vec<gitturtle_core::Remote>>,
     pub operation: Result<Option<gitturtle_core::OperationState>>,
+    pub bisect: Result<Option<gitturtle_core::BisectState>>,
     /// The Git directories of the handle that read this state, the one the
     /// window held as it asked for the read (`refresh_worktree`,
     /// `try_automatic_refresh`): the shown status is labelled with them
@@ -588,7 +614,11 @@ impl WorkingState {
     /// beside the tab's mark. Checked from the filesystem, and only when a
     /// part failed.
     pub(super) fn confirmed(self, repo: &GitRepository) -> Result<Self> {
-        if self.operation.is_err() || self.profile.is_err() || self.remotes.is_err() {
+        if self.operation.is_err()
+            || self.bisect.is_err()
+            || self.profile.is_err()
+            || self.remotes.is_err()
+        {
             ensure_found_at_path(repo)?;
         }
         Ok(self)
@@ -607,11 +637,14 @@ impl WorkingState {
         checkpoint()?;
         let operation = repo.operation_state();
         checkpoint()?;
+        let bisect = repo.bisect_state();
+        checkpoint()?;
         Ok(Self {
             status,
             profile,
             remotes,
             operation,
+            bisect,
             read_from: GitDirectories::of(repo),
         })
     }

@@ -131,6 +131,7 @@ struct Confirmed {
     window: AnyWindowHandle,
     mark: Option<Mark>,
     announcement: SharedString,
+    show_toast: bool,
 }
 
 /// A copy button and what it copies, which its Copied mark belongs to. The
@@ -190,7 +191,8 @@ pub(crate) fn copy(
     text: String,
 ) {
     cx.write_to_clipboard(ClipboardItem::new_string(text));
-    confirm(window, cx, mark, format!("{COPIED} {what}"));
+    let show_toast = mark.is_none();
+    confirm_inner(window, cx, mark, format!("{COPIED} {what}"), show_toast);
 }
 
 /// Confirms an action where it happened: `mark`, the button that asked and
@@ -202,6 +204,16 @@ pub(crate) fn confirm(
     mark: Option<Mark>,
     announcement: impl Into<SharedString>,
 ) {
+    confirm_inner(window, cx, mark, announcement, false);
+}
+
+fn confirm_inner(
+    window: &mut Window,
+    cx: &mut App,
+    mark: Option<Mark>,
+    announcement: impl Into<SharedString>,
+    show_toast: bool,
+) {
     let feedback = cx.default_global::<Feedback>();
     feedback.generation = feedback.generation.wrapping_add(1);
     let generation = feedback.generation;
@@ -210,6 +222,7 @@ pub(crate) fn confirm(
         window: window.window_handle(),
         mark,
         announcement: announcement.into(),
+        show_toast,
     });
     // The whole window redraws, so a button inside a dialog or a child view
     // reads its confirmation without its owner being notified.
@@ -281,6 +294,7 @@ fn say(window: &mut Window, cx: &mut App, assertive: bool, announcement: SharedS
         window: window.window_handle(),
         mark: None,
         announcement,
+        show_toast: false,
     });
     window.refresh();
     let end = cx.spawn(async move |cx| {
@@ -314,6 +328,44 @@ pub(crate) fn confirmed(mark: &Mark, cx: &App) -> bool {
     cx.try_global::<Feedback>()
         .and_then(|feedback| feedback.latest.as_ref())
         .is_some_and(|latest| latest.mark.as_ref() == Some(mark))
+}
+
+/// Subtle sighted confirmation pill for copy actions triggered without an
+/// in-place button mark (such as keyboard shortcuts and context menus).
+/// Automatically clears after [`RESTORE_AFTER`] and uses no motion.
+pub(crate) fn visual_toast(window: &Window, cx: &App) -> Option<AnyElement> {
+    let feedback = cx.try_global::<Feedback>()?;
+    let latest = feedback.latest.as_ref()?;
+    if latest.window != window.window_handle() || !latest.show_toast {
+        return None;
+    }
+    let p = palette(cx);
+    let text = latest.announcement.clone();
+    Some(
+        native_accessibility::hidden_from_assistive_technology(
+            div()
+                .debug_selector(|| "copy-feedback-toast".into())
+                .absolute()
+                .right_4()
+                .bottom_10()
+                .px_3()
+                .py_1p5()
+                .rounded(px(7.))
+                .bg(rgb(p.raised()))
+                .border_1()
+                .border_color(rgb(p.raised_edge()))
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .text_size(crate::appearance::ui_text(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(p.text))
+                .child(icon("check", 14., p.accent))
+                .child(text),
+            true,
+        )
+        .into_any_element(),
+    )
 }
 
 /// A copy button with the shared `button` frame and `mark`'s control id,
@@ -1333,5 +1385,32 @@ pub(crate) mod tests {
         let [_, icon, named] = buttons(cx);
         cx.update(|_, cx| assert!(confirmed(&icon_mark, cx)));
         assert_eq!(names(cx, vec![labelled, icon, named]), expected);
+    }
+
+    #[gpui::test]
+    fn visual_toast_renders_only_for_unmarked_copy_and_not_status_confirm(cx: &mut TestAppContext) {
+        let (_app, cx) = history(cx, Vec::new());
+        // Unmarked copy renders the floating toast and expires cleanly.
+        cx.update(|window, cx| copy(window, cx, None, "commit hash", "abc1234".into()));
+        let has_toast = cx.update(|window, cx| visual_toast(window, cx).is_some());
+        assert!(has_toast, "unmarked copy must show visual toast");
+
+        // Marked button copy does NOT render the floating toast (button confirms in place).
+        let mark = Mark::new("copy-hash", "abc1234");
+        cx.update(|window, cx| copy(window, cx, Some(mark), "commit hash", "abc1234".into()));
+        let has_toast = cx.update(|window, cx| visual_toast(window, cx).is_some());
+        assert!(
+            !has_toast,
+            "marked copy must not duplicate with floating toast"
+        );
+
+        // Non-copy `confirm` without a mark (such as Origin::StatusLine Git writes)
+        // must NOT show the copy toast.
+        cx.update(|window, cx| confirm(window, cx, None, "Created branch demo"));
+        let has_toast = cx.update(|window, cx| visual_toast(window, cx).is_some());
+        assert!(
+            !has_toast,
+            "non-copy status confirmation must not show floating copy toast"
+        );
     }
 }

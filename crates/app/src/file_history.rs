@@ -1052,6 +1052,7 @@ pub(super) struct ReturnContext {
     markdown_view: Option<Entity<markdown_view::View>>,
     before_editor: Option<Entity<EditorState>>,
     after_editor: Option<Entity<EditorState>>,
+    formatted_editor: Option<Entity<EditorState>>,
     images: [Option<Arc<RenderImage>>; 2],
     image_scroll: ScrollHandle,
     image_comparison: image_compare::State,
@@ -1197,6 +1198,15 @@ impl State {
         }
     }
 
+    pub(super) fn apply_tab_width(&self, width: u8, cx: &mut App) {
+        if let Some(previous) = &self.previous {
+            previous.apply_tab_width(width, cx);
+        }
+        if let Some(retained) = &self.retained {
+            retained.apply_tab_width(width, cx);
+        }
+    }
+
     pub(super) fn refresh_theme(&self, cx: &mut App) {
         if let Some(previous) = &self.previous {
             previous.refresh_theme(cx);
@@ -1230,9 +1240,14 @@ impl ReturnContext {
             + self.inspector_message.retained_bytes()
     }
     pub(super) fn rescale_code(&self, ratio: f32, cx: &mut App) {
-        for editor in [&self.patch_editor, &self.before_editor, &self.after_editor]
-            .into_iter()
-            .flatten()
+        for editor in [
+            &self.patch_editor,
+            &self.before_editor,
+            &self.after_editor,
+            &self.formatted_editor,
+        ]
+        .into_iter()
+        .flatten()
         {
             text::rescale_editor(editor, ratio, cx);
         }
@@ -1241,6 +1256,25 @@ impl ReturnContext {
         }
         if let Some(view) = &self.conflict_view {
             view.update(cx, |view, cx| view.rescale_code(ratio, cx));
+        }
+    }
+    pub(super) fn apply_tab_width(&self, width: u8, cx: &mut App) {
+        for editor in [
+            &self.patch_editor,
+            &self.before_editor,
+            &self.after_editor,
+            &self.formatted_editor,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            text::apply_tab_width(editor, width, cx);
+        }
+        if let Some(view) = &self.split_view {
+            view.update(cx, |view, cx| view.apply_tab_width(width, cx));
+        }
+        if let Some(view) = &self.conflict_view {
+            view.update(cx, |view, cx| view.apply_tab_width(width, cx));
         }
     }
     pub(super) fn refresh_theme(&self, cx: &mut App) {
@@ -1289,6 +1323,7 @@ impl GitTurtle {
             markdown_view: self.markdown_view.take(),
             before_editor: self.before_editor.take(),
             after_editor: self.after_editor.take(),
+            formatted_editor: self.formatted_editor.take(),
             images: std::mem::take(&mut self.images),
             image_scroll: std::mem::take(&mut self.image_scroll),
             image_comparison: self.image_comparison.clone(),
@@ -1550,6 +1585,7 @@ impl GitTurtle {
         self.markdown_view = retained.markdown_view;
         self.before_editor = retained.before_editor;
         self.after_editor = retained.after_editor;
+        self.formatted_editor = retained.formatted_editor;
         self.images = retained.images;
         self.image_scroll = retained.image_scroll;
         self.image_comparison = retained.image_comparison;

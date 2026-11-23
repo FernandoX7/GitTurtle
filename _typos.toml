@@ -56,3 +56,5 @@ extend-ignore-re = [
 unparseable = "unparseable"
 # PDF's Flate (zlib) stream filter, as in FlateDecode.
 flate = "flate"
+# Makefile file extension (.mak).
+mak = "mak"

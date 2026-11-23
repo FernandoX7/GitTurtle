@@ -1,7 +1,7 @@
 //! Bounded LRU preview cache shared across worker requests.
-use super::types::{Content, Job};
+use super::types::{Content, Job, PreviewRuntimeSnapshot};
 use super::{CACHE_BYTE_LIMIT, CACHE_ENTRY_LIMIT, PREVIEW_EDGE};
-use gitturtle_core::FileChange;
+use gitturtle_core::{DiffAlgorithm, FileChange};
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
@@ -21,6 +21,8 @@ pub(crate) struct PreviewKey {
     pub(super) new_mode: String,
     pub(super) preview_edge: u32,
     pub(super) origins: crate::markdown_view::Origins,
+    pub(super) dark_mermaid: bool,
+    pub(super) diff_algorithm: DiffAlgorithm,
 }
 
 impl PreviewKey {
@@ -35,6 +37,8 @@ impl PreviewKey {
             new_mode: file.new_mode.clone(),
             preview_edge: PREVIEW_EDGE,
             origins: Default::default(),
+            dark_mermaid: false,
+            diff_algorithm: DiffAlgorithm::Patience,
         }
     }
 
@@ -49,9 +53,22 @@ impl PreviewKey {
         }
     }
 
+    pub(crate) fn with_options(
+        repository: &Path,
+        file: &FileChange,
+        origins: crate::markdown_view::Origins,
+        options: PreviewRuntimeSnapshot,
+    ) -> Self {
+        Self {
+            dark_mermaid: options.dark_mermaid,
+            diff_algorithm: options.diff_algorithm,
+            ..Self::with_origins(repository, file, origins)
+        }
+    }
+
     /// The key of a comparison preview (`Job::Preview`), the whole of what
     /// it reads, as its cache entry is keyed.
-    pub(super) fn of(job: &Job) -> Option<Self> {
+    pub(super) fn of_with(job: &Job, options: PreviewRuntimeSnapshot) -> Option<Self> {
         let Job::Preview {
             repo,
             file,
@@ -61,7 +78,12 @@ impl PreviewKey {
         else {
             return None;
         };
-        Some(Self::with_origins(repo.path(), file, origins.clone()))
+        Some(Self::with_options(
+            repo.path(),
+            file,
+            origins.clone(),
+            options,
+        ))
     }
 }
 

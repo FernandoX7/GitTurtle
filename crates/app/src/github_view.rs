@@ -2698,6 +2698,12 @@ struct Panel {
     pressed: std::rc::Rc<std::cell::Cell<Option<u64>>>,
     status: Option<PullStatus>,
     description: Option<Entity<EditorState>>,
+    description_view: Option<Entity<crate::markdown_view::View>>,
+    description_source: bool,
+    pr_filter_open: bool,
+    pr_query: github::PullListQuery,
+    pr_search: Entity<InputState>,
+    checks_expanded: bool,
     create: bool,
     /// Whether the description's field holds a review's text, restored or typed for an opened
     /// pull request, rather than what the New pull request form left in it: the form and the
@@ -2799,7 +2805,7 @@ impl Panel {
             head:cx.new(|cx|InputState::new(window,cx).default_value(branch).placeholder("Published head branch (owner:branch for a fork)")),
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
-            rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
+            rows:vec![],listed:None,existing:None,created_only:false,show_row:Default::default(),show_line:Default::default(),row_parts:Vec::new(),page:1,has_next:false,pull:None,pressed:Default::default(),status:None,description:None,description_view:None,description_source:false,pr_filter_open:false,pr_query:github::PullListQuery::default(),pr_search:cx.new(|cx|InputState::new(window,cx).placeholder("Filter by title, branch, or author")),checks_expanded:false,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
             account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,refused_during:None,origin:Origin::Panel,presses:Presses::default(),held:Default::default(),hears_keys:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:SharedString::default(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
             reviewed: false,
@@ -2848,6 +2854,17 @@ impl Panel {
                 if matches!(event, InputEvent::Change) {
                     this.confirm = None;
                     this.defer_reply_save(window, cx);
+                }
+            },
+        ));
+        let pr_search = this.pr_search.clone();
+        this.subscriptions.push(cx.subscribe_in(
+            &pr_search,
+            window,
+            |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.pr_query.search = input.read(cx).value().to_string();
+                    cx.notify();
                 }
             },
         ));
@@ -3771,12 +3788,13 @@ impl Panel {
             }
         };
         let opener = self.opener();
+        let query = self.pr_query.clone();
         self.run(
             RequestKind::Load,
             move |control| {
                 let transport = opener.open()?;
                 let login = transport.login().to_owned();
-                let page = Client(transport).list(&repository, page, &control)?;
+                let page = Client(transport).list_with_query(&repository, page, &query, &control)?;
                 Ok((page, login, repository))
             },
             |result, this, window, cx| match result {
@@ -3846,6 +3864,11 @@ impl Panel {
             }
         };
         let opener = self.opener();
+        let mermaid_theme = if gpui_kit::component::Theme::global(cx).mode.is_dark() {
+            gitturtle_preview::mermaid::MermaidTheme::Dark
+        } else {
+            gitturtle_preview::mermaid::MermaidTheme::Light
+        };
         self.run(RequestKind::Load,move|control|{
             let mut client=Client(opener.open()?);
             let pull=client.pull(&repository,pull.number,&control)?;
@@ -3853,11 +3876,23 @@ impl Panel {
             let status=client.status(&captured,&control);
             let files=client.files(&captured,1,&control);
             let comments=client.review_threads(&captured,None,&control);
-            Ok((pull,captured,status,files,comments))
+            // Prepare rendered Markdown & Mermaid diagrams off the UI thread.
+            let rendered_body = pull.body.as_deref().and_then(|body| {
+                crate::markdown_view::prepare_inline(body, mermaid_theme, || {
+                    anyhow::ensure!(!control.is_cancelled(), "Pull request load cancelled");
+                    Ok(())
+                })
+            });
+            Ok((pull,captured,status,files,comments,rendered_body))
         },|result,this,window,cx|match result {
-            Ok((pull,captured,status,files,comments))=>{
+            Ok((pull,captured,status,files,comments,rendered_body))=>{
                 this.leave_form(cx);this.confirm=None;this.review.reset_content();this.conversations.reset_content();this.review.show_list=false;this.review.section=Section::Overview;
                 this.description=pull.body.as_ref().map(|body|text::wrapped_editor(body,"markdown",window,cx));
+                this.description_view = rendered_body.map(|comparison| {
+                    cx.new(|cx| crate::markdown_view::View::new(comparison, true, cx))
+                });
+                this.description_source = false;
+                this.checks_expanded = false;
                 let mut errors=vec![];
                 match status {Ok(status)=>this.status=Some(status),Err(error)=>{this.status=None;errors.push(format!("Review/check status: {error:#}"));}}
                 match files {Ok(page)=>{this.review.files=page.items;this.review.file_page=page.page;this.review.files_next=page.has_next;},Err(error)=>errors.push(format!("Changed files: {error:#}"))}
@@ -3906,6 +3941,9 @@ impl Panel {
         self.pull = None;
         self.status = None;
         self.description = None;
+        self.description_view = None;
+        self.description_source = false;
+        self.checks_expanded = false;
         self.confirm = None;
         match self.left.take() {
             // A review took the description's place, no edit of the person's: the form
@@ -3924,6 +3962,379 @@ impl Panel {
         self.save_draft(window, cx);
         cx.notify();
     }
+
+    fn captured_pull(&self, cx: &App) -> Result<github::CapturedPull, String> {
+        let pull = self
+            .pull
+            .as_ref()
+            .ok_or_else(|| "Open a pull request first.".to_owned())?;
+        let repository = self.destination(cx).map_err(|err| err.to_string())?;
+        Ok(pull.capture(repository))
+    }
+
+    fn queue_pr_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
+        let Some(account) = self.account.clone() else {
+            self.error =
+                Some("Connect a GitHub account before performing outbound PR actions.".into());
+            cx.notify();
+            return;
+        };
+        self.confirm = Some(Confirmation { action, account });
+        self.error = None;
+        self.conversations.confirm_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn open_pr_in_browser(&mut self, cx: &mut Context<Self>) {
+        let Some(pull) = self.pull.as_ref() else {
+            return;
+        };
+        let Ok(repo) = self.destination(cx) else {
+            return;
+        };
+        let url = pull.web_url(&repo);
+        if url.starts_with("https://github.com/") {
+            cx.open_url(&url);
+        }
+    }
+
+    fn checkout_pr_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.review.fixture {
+            return;
+        }
+        let captured = match self.captured_pull(cx) {
+            Ok(captured) => captured,
+            Err(err) => {
+                self.error = Some(err);
+                cx.notify();
+                return;
+            }
+        };
+        let number = captured.number;
+        let expected_head_sha = captured.head.sha.clone();
+        let expected_github_repo = Some(format!(
+            "{}/{}",
+            captured.repository.owner, captured.repository.name
+        ));
+        let worktree_path = self.repo.path().to_path_buf();
+        let default_local = format!("pr-{number}");
+        let owner = self.owner.clone();
+        let default_remote = owner
+            .upgrade()
+            .map(|app| app.read(cx).remote_name.read(cx).value().trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "origin".into());
+        let remote_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("origin")
+                .default_value(default_remote)
+        });
+        let branch_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("pr-123")
+                .default_value(default_local)
+        });
+        let error_slot: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        branch_input.focus_handle(cx).focus(window, cx);
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let labels = crate::appearance::labels(cx);
+            let remote_input = remote_input.clone();
+            let branch_input = branch_input.clone();
+            let submit_remote = remote_input.clone();
+            let submit_branch = branch_input.clone();
+            let error_slot = std::rc::Rc::clone(&error_slot);
+            let submit_error = std::rc::Rc::clone(&error_slot);
+            let current_error = error_slot.borrow().clone();
+            let owner = owner.clone();
+            let worktree_path = worktree_path.clone();
+            let expected_head_sha = expected_head_sha.clone();
+            let expected_github_repo = expected_github_repo.clone();
+            dialog
+                .title(format!("Check out PR #{number} locally"))
+                .width(appearance::dialog_width(px(480.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child(format!(
+                                    "Explicitly fetch refs/pull/{number}/head from the remote, verify it matches captured commit {}, and create a new local branch there.",
+                                    short_oid(&expected_head_sha)
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Remote")
+                                .child(Input::new(&remote_input).aria_label("Git remote name")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("New local branch name")
+                                .child(Input::new(&branch_input).aria_label("New local branch name")),
+                        )
+                        .when_some(current_error, |col, err| {
+                            col.child(
+                                div()
+                                    .id("checkout-pr-error")
+                                    .role(Role::Alert)
+                                    .aria_label(err.clone())
+                                    .text_size(appearance::ui_text(11.))
+                                    .text_color(rgb(labels.warning))
+                                    .child(err),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Fetch & switch", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let remote = submit_remote.read(cx).value().trim().to_owned();
+                    let local_branch = submit_branch.read(cx).value().trim().to_owned();
+                    if remote.is_empty() || local_branch.is_empty() {
+                        *submit_error.borrow_mut() =
+                            Some("Enter both a remote name and a new local branch name.".into());
+                        window.refresh();
+                        return false;
+                    }
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path.as_ref() != Some(&worktree_path) {
+                            this.operation_error = Some(
+                                "Switched repository tab before checkout started; reopen Pull requests in the target repository."
+                                    .into(),
+                            );
+                            cx.notify();
+                            return;
+                        }
+                        this.write(
+                            gitturtle_core::WriteCommand::CheckoutPullRequest {
+                                remote,
+                                number,
+                                local_branch,
+                                expected_head_sha: expected_head_sha.clone(),
+                                expected_github_repo: expected_github_repo.clone(),
+                            },
+                            "Fetching PR branch…",
+                            window,
+                            cx,
+                        );
+                    });
+                    true
+                })
+        });
+    }
+
+    fn open_merge_pr_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let captured = match self.captured_pull(cx) {
+            Ok(captured) => captured,
+            Err(err) => {
+                self.error = Some(err);
+                cx.notify();
+                return;
+            }
+        };
+        let default_title = self
+            .pull
+            .as_ref()
+            .map(|p| format!("{} (#{})", p.title, p.number))
+            .unwrap_or_default();
+        let method = std::rc::Rc::new(std::cell::Cell::new(github::MergeMethod::Squash));
+        let title_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Optional merge commit title")
+                .default_value(default_title)
+        });
+        let panel = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let method = std::rc::Rc::clone(&method);
+            let submit_method = std::rc::Rc::clone(&method);
+            let title_input = title_input.clone();
+            let submit_title = title_input.clone();
+            let panel = panel.clone();
+            let captured = captured.clone();
+            let selected = method.get();
+            dialog
+                .title(format!("Merge PR #{}", captured.number))
+                .width(appearance::dialog_width(px(480.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child(format!(
+                                    "Pinned to captured head {} so a remote push cannot merge unreviewed commits.",
+                                    short_oid(&captured.head.sha)
+                                )),
+                        )
+                        .child(
+                            div().flex().flex_col().gap_1().children(
+                                github::MergeMethod::ALL.into_iter().map(|choice| {
+                                    let active = selected == choice;
+                                    let method = std::rc::Rc::clone(&method);
+                                    button(
+                                        ("github-merge-method", choice as usize),
+                                        choice.label(),
+                                        if active { "check" } else { "" },
+                                        active,
+                                    )
+                                    .toggled(active)
+                                    .accessibility_label(format!("Merge method: {}", choice.label()))
+                                    .w_full()
+                                    .on_click(move |_, window, _| {
+                                        method.set(choice);
+                                        window.refresh();
+                                    })
+                                }),
+                            ),
+                        )
+                        .when(selected != github::MergeMethod::Rebase, |col| {
+                            col.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child("Commit title (optional)")
+                                    .child(Input::new(&title_input).aria_label("Merge commit title")),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Review merge…", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let chosen = submit_method.get();
+                    let raw_title = submit_title.read(cx).value().trim().to_owned();
+                    let commit_title = (!raw_title.is_empty()
+                        && chosen != github::MergeMethod::Rebase)
+                        .then_some(raw_title);
+                    let action = Action::MergePull {
+                        pull: captured.clone(),
+                        method: chosen,
+                        commit_title,
+                        commit_message: None,
+                    };
+                    let _ = panel.update(cx, |this, cx| {
+                        this.queue_pr_action(action, window, cx);
+                    });
+                    true
+                })
+        });
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PR CSV editor dialog takes title, prompt, placeholder, initial value, empty-input policy, builder, window, and context"
+    )]
+    fn open_pr_csv_dialog(
+        &mut self,
+        title: &'static str,
+        prompt: &'static str,
+        placeholder: &'static str,
+        initial: String,
+        allow_empty: bool,
+        build_action: impl Fn(github::CapturedPull, Vec<String>) -> Action + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let captured = match self.captured_pull(cx) {
+            Ok(captured) => captured,
+            Err(err) => {
+                self.error = Some(err);
+                cx.notify();
+                return;
+            }
+        };
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .default_value(initial)
+        });
+        input.focus_handle(cx).focus(window, cx);
+        let error_slot: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let panel = cx.entity().downgrade();
+        let build_action = std::rc::Rc::new(build_action);
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let labels = crate::appearance::labels(cx);
+            let input = input.clone();
+            let submit_input = input.clone();
+            let error_slot = std::rc::Rc::clone(&error_slot);
+            let submit_error = std::rc::Rc::clone(&error_slot);
+            let current_error = error_slot.borrow().clone();
+            let panel = panel.clone();
+            let captured = captured.clone();
+            let build_action = std::rc::Rc::clone(&build_action);
+            dialog
+                .title(title)
+                .width(appearance::dialog_width(px(480.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child(prompt),
+                        )
+                        .child(Input::new(&input).aria_label(title))
+                        .when_some(current_error, |col, err| {
+                            col.child(
+                                div()
+                                    .id("pr-csv-error")
+                                    .role(Role::Alert)
+                                    .aria_label(err.clone())
+                                    .text_size(appearance::ui_text(11.))
+                                    .text_color(rgb(labels.warning))
+                                    .child(err),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Review change…", Some("Cancel")))
+                .on_ok(move |_, window, cx| {
+                    let values: Vec<String> = submit_input
+                        .read(cx)
+                        .value()
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned)
+                        .collect();
+                    if !allow_empty && values.is_empty() {
+                        *submit_error.borrow_mut() =
+                            Some("Enter at least one GitHub username.".into());
+                        window.refresh();
+                        return false;
+                    }
+                    let action = build_action(captured.clone(), values);
+                    let _ = panel.update(cx, |this, cx| {
+                        this.queue_pr_action(action, window, cx);
+                    });
+                    true
+                })
+        });
+    }
+
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         let revision = self.base.read(cx).value().to_string();
@@ -5146,7 +5557,7 @@ impl Render for Panel {
                     // the list or the body a frame later, is made, in the list and in the body.
                     if landed{for (shown,view) in [(&revealed,&scroll),(&shown,&body)]{*shown.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:view.bounds(),rem_size:window.rem_size()};}}}})
                     .id("github-pr-list").debug_selector(||"github-pr-list".into()).track_scroll(&self.review.pull_scroll).on_scroll(crate::tags::chain_scroll_wheel(self.review.pull_scroll.clone(),self.review.pull_scroll_rest.clone())).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
-                    .children(self.rows.iter().zip(&self.row_parts).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
+                    .children(self.rows.iter().zip(&self.row_parts).filter(|(pull,_)|self.pr_query.matches(pull)).map(|(pull,(_,part))|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row, as the Files list's rows are: it rests on the panel surface,
                         // the selected one on the selected surface, and lifts to the row hover under
                         // both its lines, which open the PR alike. The title Button spans it, its
@@ -5197,7 +5608,14 @@ impl Render for Panel {
                 // for text.
                 .child(self.part("pr-pager",div(),cx).flex().flex_wrap().items_center().gap_2().child(self.button("github-previous","Previous PR page","",false, cx).debug_selector(||"github-previous".into()).mr(-text_inset()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
                     .child(phrases("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).min_w_0().ml(text_inset()).text_color(rgb(p.muted)))
-                    .child(self.button("github-next","Next PR page","",false, cx).debug_selector(||"github-next".into()).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
+                    .child(self.button("github-next","Next PR page","",false, cx).debug_selector(||"github-next".into()).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))
+                    .child(self.button("github-pr-filter-toggle",if self.pr_filter_open{"Hide filters"}else{"Filters"},"",self.pr_filter_open, cx).debug_selector(||"github-pr-filter-toggle".into()).toggled(self.pr_filter_open).on_click(cx.listener(|this,_,_,cx|{this.pr_filter_open = !this.pr_filter_open;cx.notify();}))))
+                .when(self.pr_filter_open,|element|element.child(self.part("pr-filters",div(),cx).flex().flex_col().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
+                    .child(div().flex().flex_wrap().items_center().gap_2()
+                        .children(github::PullStateFilter::ALL.into_iter().map(|state|{let active=self.pr_query.state==state;self.button(("github-filter-state",state as usize),state.label(),"",active,cx).toggled(active).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{if this.pr_query.state!=state{this.pr_query.state=state;if this.listed.is_some(){this.refresh(1,window,cx);}else{cx.notify();}}}))}))
+                        .children(github::PullSort::ALL.into_iter().map(|sort|{let active=self.pr_query.sort==sort;self.button(("github-filter-sort",sort as usize),sort.label(),"",active,cx).toggled(active).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{if this.pr_query.sort!=sort{this.pr_query.sort=sort;if this.listed.is_some(){this.refresh(1,window,cx);}else{cx.notify();}}}))}))
+                        .child(self.button("github-filter-draft","Drafts only","",self.pr_query.draft_only,cx).toggled(self.pr_query.draft_only).on_click(cx.listener(|this,_,_,cx|{this.pr_query.draft_only = !this.pr_query.draft_only;cx.notify();}))))
+                    .child(Input::new(&self.pr_search).aria_label("Filter pull requests by text")))))
             .when_some(self.pull.as_ref(),|element,pull|element
                 // The PR's header and its section tabs, shown from the title's line as the PR
                 // opens.
@@ -5208,7 +5626,7 @@ impl Render for Panel {
                         if let [back,title]=children[..]{line.set(if title.top()<back.bottom(){back.top().min(title.top())}else{title.top()});}
                     }).child(self.button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false, cx).debug_selector(||"github-back-list".into()).mr(-text_inset()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
                         .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).debug_selector(||"github-pull-title".into()).min_w_0().ml(text_inset()).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
-                    .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
+                    .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.merged_at.is_some(){"Merged PR"}else if pull.state.eq_ignore_ascii_case("closed"){"Closed PR"}else if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx)))
                 .when(self.review.section==Section::Overview,|element|element
                     // The last section tab owns the PR's captured identities, and Tab onto it shows
@@ -5221,15 +5639,324 @@ impl Render for Panel {
                         .child(self.ringed_part("identities",div(),&self.review.identities_focus,cx)
                             .child(div().id("github-identities").role(Role::Group).aria_label("Captured identities: the base and head commits this review is pinned to").when(self.review.identities.apart()||self.review.identities_focus.is_focused(window),|block|block.track_focus(&self.review.identities_focus)).border_1().border_color(if self.ringed(&self.review.identities_focus,cx){rgb(p.accent).into()}else{gpui_kit::transparent_black()}).rounded(px(6.)).px(text_inset()-px(1.))
                                 .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).text_color(rgb(p.muted))))))
-                    .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).relative().h(px(120.)).flex_shrink_0()
-                        // Each row of the description its viewport shows is a line of the body.
-                        .child(review::editor_rows(description))
-                        .child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
-                    .when_some(self.status.as_ref(),|element,status|element.child(div().py_3().px(text_inset()).bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
-                        .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
-                        .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
+                    .when_some(self.description.as_ref(),|element,description|{
+                        let has_rendered = self.description_view.is_some();
+                        let show_rendered = has_rendered && !self.description_source;
+                        let rendered_view = self.description_view.clone();
+                        element.child(
+                            self.part("description", div(), cx)
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .flex_shrink_0()
+                                .when(has_rendered, |block| {
+                                    block.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .child(
+                                                self.button("github-desc-rendered", "Rendered", "", show_rendered, cx)
+                                                    .toggled(show_rendered)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.description_source = false;
+                                                        cx.notify();
+                                                    })),
+                                            )
+                                            .child(
+                                                self.button("github-desc-source", "Source", "", !show_rendered, cx)
+                                                    .toggled(!show_rendered)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.description_source = true;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                })
+                                .child(if let (true, Some(view)) = (show_rendered, rendered_view) {
+                                    div()
+                                        .h(px(220.))
+                                        .rounded(px(6.))
+                                        .border_1()
+                                        .border_color(rgb(p.border))
+                                        .overflow_hidden()
+                                        .child(view)
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .relative()
+                                        .h(px(120.))
+                                        .flex_shrink_0()
+                                        .child(review::editor_rows(description))
+                                        .child(
+                                            crate::editor_find::Editor::new(description)
+                                                .readonly(true)
+                                                .h_full()
+                                                .aria_label("Pull request description, exact Markdown source"),
+                                        )
+                                        .into_any_element()
+                                }),
+                        )
+                    })
+                    .when_some(self.status.as_ref(),|element,status|{
+                        let passed = status.check_runs.iter().filter(|c| c.conclusion == github::CheckConclusion::Success).count();
+                        let failed = status.check_runs.iter().filter(|c| c.conclusion == github::CheckConclusion::Failure).count();
+                        let pending_runs = status.check_runs.iter().filter(|c| c.conclusion == github::CheckConclusion::Pending).count();
+                        let has_runs = !status.check_runs.is_empty();
+                        let runs_summary = format!(
+                            "Checks · {} passed · {} failed · {} pending{}",
+                            passed,
+                            failed,
+                            pending_runs,
+                            if status.incomplete { " · more checks outside this preview" } else { "" }
+                        );
+                        element.child(
+                            div()
+                                .py_3()
+                                .px(text_inset())
+                                .bg(rgb(p.subtle))
+                                .rounded(px(6.))
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(label(
+                                    "github-review-status",
+                                    format!(
+                                        "Reviews · {}",
+                                        if status.reviews.is_empty() {
+                                            "None reported".into()
+                                        } else {
+                                            status.reviews.join(" · ")
+                                        }
+                                    ),
+                                ))
+                                .child(if has_runs {
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_wrap()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(label("github-check-status", runs_summary))
+                                                .child(
+                                                    self.button(
+                                                        "github-checks-toggle",
+                                                        if self.checks_expanded {
+                                                            "Hide checks"
+                                                        } else {
+                                                            "Show checks"
+                                                        },
+                                                        "",
+                                                        self.checks_expanded,
+                                                        cx,
+                                                    )
+                                                    .toggled(self.checks_expanded)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.checks_expanded = !this.checks_expanded;
+                                                        cx.notify();
+                                                    })),
+                                                ),
+                                        )
+                                        .when(self.checks_expanded, |col| {
+                                            col.children(status.check_runs.iter().enumerate().map(|(ix, run)| {
+                                                let outcome_word = match run.conclusion {
+                                                    github::CheckConclusion::Success => "Passed",
+                                                    github::CheckConclusion::Failure => "Failed",
+                                                    github::CheckConclusion::Pending => "Pending",
+                                                    github::CheckConclusion::Neutral => "Neutral",
+                                                    github::CheckConclusion::Skipped => "Skipped",
+                                                };
+                                                let clean_name = gitturtle_core::strip_bidi_controls(&run.name);
+                                                let safe_url = run
+                                                    .details_url
+                                                    .as_ref()
+                                                    .filter(|u| u.starts_with("https://"))
+                                                    .cloned();
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_size(appearance::ui_text(11.))
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .truncate()
+                                                            .text_color(rgb(p.muted))
+                                                            .child(format!("{outcome_word} · {clean_name} ({})", run.status)),
+                                                    )
+                                                    .when_some(safe_url, |row, url| {
+                                                        let tooltip_url = url.clone();
+                                                        let accessible = format!("Open details for check {clean_name}");
+                                                        row.child(
+                                                            self.button(("github-check-details", ix), "Details", "", false, cx)
+                                                                .accessibility_label(accessible)
+                                                                .tooltip(tooltip_url)
+                                                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                                        )
+                                                    })
+                                            }))
+                                        })
+                                        .into_any_element()
+                                } else {
+                                    label(
+                                        "github-check-status",
+                                        format!(
+                                            "Checks · {}{}",
+                                            if status.checks.is_empty() {
+                                                "None reported".into()
+                                            } else {
+                                                status.checks.join(" · ")
+                                            },
+                                            if status.incomplete {
+                                                " · Additional status entries are outside this preview"
+                                            } else {
+                                                ""
+                                            }
+                                        ),
+                                    )
+                                    .into_any_element()
+                                }),
+                        )
+                    })
                     .child(self.render_threads(None,window,cx))
-                    .child(self.part("open-changes",div(),cx).flex().child(self.button("github-open-changes","Open captured local comparison","",false, cx).debug_selector(||"github-open-changes".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx))))))
+                    .child({
+                        let panel_more = cx.entity().downgrade();
+                        let pull_is_draft = pull.draft;
+                        let pull_is_open = pull.state.eq_ignore_ascii_case("open");
+                        let pull_is_merged = pull.merged_at.is_some();
+                        let has_node_id = pull.node_id.is_some();
+                        let existing_labels = pull.labels.iter().map(|l| l.name.clone()).collect::<Vec<_>>().join(", ");
+                        let existing_reviewers = pull.requested_reviewers.iter().map(|r| r.login.clone()).collect::<Vec<_>>().join(", ");
+                        self.part("open-changes",div(),cx).flex().flex_wrap().items_center().gap_2()
+                            .child(self.button("github-open-changes","Open captured local comparison","",false, cx).debug_selector(||"github-open-changes".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx))))
+                            .child(self.button("github-checkout-pr","Checkout PR branch","",false, cx).debug_selector(||"github-checkout-pr".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.checkout_pr_branch(window,cx))))
+                            .child(self.button("github-merge-pr","Merge…","",false, cx).debug_selector(||"github-merge-pr".into()).disabled(pending||self.review.fixture||pull_is_draft||!pull_is_open).on_click(cx.listener(|this,_,window,cx|this.open_merge_pr_dialog(window,cx))))
+                            .child(self.button("github-open-browser","Open in browser","",false, cx).debug_selector(||"github-open-browser".into()).disabled(self.review.fixture).on_click(cx.listener(|this,_,_,cx|this.open_pr_in_browser(cx))))
+                            .child(
+                                self.button("github-pr-more","⋯","",false, cx)
+                                    .debug_selector(||"github-pr-more".into())
+                                    .tooltip("More PR actions (Draft, Close/Reopen, Labels, Reviewers)")
+                                    .accessibility_label("More pull request actions")
+                                    .disabled(pending||self.review.fixture)
+                                    .app_menu(move |menu, _, _| {
+                                        use gpui_kit::component::menu::PopupMenuItem;
+                                        let p1 = panel_more.clone();
+                                        let p2 = panel_more.clone();
+                                        let p3 = panel_more.clone();
+                                        let p4 = panel_more.clone();
+                                        let labels_init = existing_labels.clone();
+                                        let reviewers_init = existing_reviewers.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(if pull_is_draft {
+                                                "Mark ready for review…"
+                                            } else {
+                                                "Convert to draft…"
+                                            })
+                                            .disabled(!pull_is_open || !has_node_id)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = p1.update(cx, |this, cx| {
+                                                    let Some(node_id) = this
+                                                        .pull
+                                                        .as_ref()
+                                                        .and_then(|p| p.node_id.clone())
+                                                    else {
+                                                        return;
+                                                    };
+                                                    let current_draft = this
+                                                        .pull
+                                                        .as_ref()
+                                                        .is_some_and(|p| p.draft);
+                                                    if let Ok(captured) = this.captured_pull(cx) {
+                                                        this.queue_pr_action(
+                                                            Action::SetPullDraft {
+                                                                pull: captured,
+                                                                node_id,
+                                                                draft: !current_draft,
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                });
+                                            }),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new(if pull_is_open {
+                                                "Close pull request…"
+                                            } else {
+                                                "Reopen pull request…"
+                                            })
+                                            .disabled(!pull_is_open && pull_is_merged)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = p2.update(cx, |this, cx| {
+                                                    if let Ok(captured) = this.captured_pull(cx) {
+                                                        this.queue_pr_action(
+                                                            Action::SetPullState {
+                                                                pull: captured,
+                                                                open: !pull_is_open,
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                });
+                                            }),
+                                        )
+                                        .separator()
+                                        .item(
+                                            PopupMenuItem::new("Edit labels…").on_click(
+                                                move |_, window, cx| {
+                                                    let labels_init = labels_init.clone();
+                                                    let _ = p3.update(cx, |this, cx| {
+                                                        this.open_pr_csv_dialog(
+                                                            "Edit pull request labels",
+                                                            "Enter comma-separated label names to replace the PR's labels.",
+                                                            "bug, performance, needs-review",
+                                                            labels_init,
+                                                            true,
+                                                            |pull, labels| Action::UpdateLabels {
+                                                                pull,
+                                                                labels,
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .item(
+                                            PopupMenuItem::new("Request reviewers…").on_click(
+                                                move |_, window, cx| {
+                                                    let reviewers_init = reviewers_init.clone();
+                                                    let _ = p4.update(cx, |this, cx| {
+                                                        this.open_pr_csv_dialog(
+                                                            "Request pull request reviewers",
+                                                            "Enter comma-separated GitHub usernames to request review from.",
+                                                            "alice, bob",
+                                                            reviewers_init,
+                                                            false,
+                                                            |pull, reviewers| {
+                                                                Action::RequestReviewers {
+                                                                    pull,
+                                                                    reviewers,
+                                                                }
+                                                            },
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                    }),
+                            )
+                    }))
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element

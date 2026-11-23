@@ -342,6 +342,7 @@ impl GitTurtle {
         self.tags = snapshot.tags;
         self.tags_truncated = snapshot.tags_truncated;
         self.stashes = snapshot.stashes;
+        self.submodules = snapshot.submodules;
         self.worktrees = snapshot.worktrees;
         self.commits = snapshot.commits;
         self.graph = snapshot.graph;
@@ -772,6 +773,7 @@ mod tests {
             tags: vec![],
             tags_truncated: false,
             stashes: vec![],
+            submodules: vec![],
             history_scope: HistoryScope::FromCommit(commits[0].oid.clone()),
             history_offset: 0,
             history_next_offset: None,

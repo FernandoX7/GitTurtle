@@ -1090,6 +1090,16 @@ impl GitTurtle {
                 })
                 .sum::<usize>()
             + self
+                .submodules
+                .iter()
+                .map(|sub| {
+                    std::mem::size_of::<gitturtle_core::SubmoduleSummary>()
+                        + sub.name.capacity()
+                        + sub.path.as_os_str().len()
+                        + sub.index_oid.capacity()
+                })
+                .sum::<usize>()
+            + self
                 .worktrees
                 .iter()
                 .map(|worktree| {
@@ -1223,7 +1233,9 @@ impl GitTurtle {
                 TextMode::Before => "before",
                 TextMode::After => "after",
                 TextMode::Diagrams => "diagrams",
-                _ => "markdown",
+                TextMode::Markdown => "markdown",
+                TextMode::Table => "table",
+                TextMode::Formatted => "formatted",
             }
             .into(),
             compare: self.mode == WorkspaceMode::Compare,
@@ -2676,6 +2688,26 @@ impl GitTurtle {
         self.save_repository_session(window, cx);
         cx.notify();
     }
+    pub(super) fn reorder_repository_tab(
+        &mut self,
+        from: usize,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx)
+            || window.has_active_sheet(cx)
+            || from == to
+            || from >= self.repository_tabs.tabs.len()
+            || to >= self.repository_tabs.tabs.len()
+        {
+            return;
+        }
+        crate::native_accessibility::close_tab_menus(window, cx);
+        self.repository_tabs.reorder(from, to);
+        self.save_repository_session(window, cx);
+        cx.notify();
+    }
     pub(super) fn close_repository_tab(
         &mut self,
         index: usize,
@@ -2751,6 +2783,8 @@ impl GitTurtle {
             self.tags.clear();
             self.tags_truncated = false;
             self.stashes.clear();
+            self.submodules.clear();
+            self.bisect_state = None;
             self.history_list_layout = None;
             self.file_list_layout = None;
             self.repository = None;
@@ -2967,6 +3001,8 @@ impl GitTurtle {
             "after" => TextMode::After,
             "diagrams" => TextMode::Diagrams,
             "markdown" => TextMode::Markdown,
+            "table" => TextMode::Table,
+            "formatted" => TextMode::Formatted,
             _ => TextMode::Unified,
         };
         let query = saved.query.clone();
@@ -3878,7 +3914,12 @@ impl GitTurtle {
                                 // pixels, so layout keeps the floor whole.
                                 let name_floor =
                                     insets + tab_label_widths(&label, pin, &line, window).1;
-                                self.header_control(div())
+                                let can_drag = self.repository_tabs.tabs.len() >= 2
+                                    && !window.has_active_dialog(cx)
+                                    && !window.has_active_sheet(cx);
+                                let drag_label: SharedString = name.clone().into();
+                                let drop_border = rgb(colors.accent);
+                                self.header_control(div().id(("repository-tab-frame", index)))
                                     .debug_selector(move || format!("repository-tab-frame-{index}"))
                                     .flex()
                                     .items_center()
@@ -3886,6 +3927,33 @@ impl GitTurtle {
                                     .min_w(name_floor + appearance::ui_size(28.))
                                     .rounded(px(7.))
                                     .when(selected, |el| el.bg(rgb(colors.selected)))
+                                    .when(can_drag, |el| {
+                                        el.on_drag(
+                                            DraggedRepositoryTab {
+                                                index,
+                                                label: drag_label.clone(),
+                                            },
+                                            |drag, _, _, cx| {
+                                                cx.new(|_| DragTabPreview(drag.label.clone()))
+                                            },
+                                        )
+                                        .drag_over::<DraggedRepositoryTab>(
+                                            move |style, drag, _, _| {
+                                                if drag.index == index {
+                                                    style
+                                                } else {
+                                                    style.border_l_2().border_color(drop_border)
+                                                }
+                                            },
+                                        )
+                                        .on_drop(cx.listener(
+                                            move |this, drag: &DraggedRepositoryTab, window, cx| {
+                                                this.reorder_repository_tab(
+                                                    drag.index, index, window, cx,
+                                                );
+                                            },
+                                        ))
+                                    })
                                     .child(
                                         button(("repository-tab", index), label, "", selected)
                                             // The frame's fill and edge are
@@ -4210,6 +4278,30 @@ fn tab_label_widths(
         crate::views::laid_out_text_width(whole, window),
         crate::views::laid_out_text_width(floor, window),
     )
+}
+
+#[derive(Clone)]
+struct DraggedRepositoryTab {
+    index: usize,
+    label: SharedString,
+}
+
+struct DragTabPreview(SharedString);
+
+impl Render for DragTabPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        div()
+            .px_3()
+            .py_1()
+            .rounded(px(7.))
+            .bg(rgb(p.raised()))
+            .border_1()
+            .border_color(rgb(p.accent))
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(p.text))
+            .child(self.0.clone())
+    }
 }
 
 /// The repository tab strip's minimum height: the larger of its 36 px at the

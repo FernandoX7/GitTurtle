@@ -311,11 +311,30 @@ impl Literal {
 const STATIC_MERMAID: &str = "Static Mermaid: flowchart, sequence, class, state, ER and pie. \
                               Source tabs retain exact text and staging.";
 
+#[cfg(test)]
 pub(super) fn prepare_mermaid(
     old: &str,
     new: &str,
     file: &gitturtle_core::FileChange,
     lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    check: impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<Option<Comparison>> {
+    prepare_mermaid_with_theme(
+        old,
+        new,
+        file,
+        lfs_failed,
+        gitturtle_preview::mermaid::MermaidTheme::Light,
+        check,
+    )
+}
+
+pub(super) fn prepare_mermaid_with_theme(
+    old: &str,
+    new: &str,
+    file: &gitturtle_core::FileChange,
+    lfs_failed: [Option<gitturtle_core::LfsObjectFailure>; 2],
+    theme: gitturtle_preview::mermaid::MermaidTheme,
     check: impl Fn() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Comparison>> {
     // Symlinks and unresolved LFS pointers remain literal identities, including
@@ -326,12 +345,12 @@ pub(super) fn prepare_mermaid(
     let old_name = file.old_path.as_deref().unwrap_or_else(|| file.path());
     let new_name = file.new_path.as_deref().unwrap_or_else(|| file.path());
     let old_document = if file.old_path.is_some() && old_literal.is_none() {
-        gitturtle_preview::mermaid::preview(old, old_name, 1600, &check)?
+        gitturtle_preview::mermaid::preview_with_theme(old, old_name, 1600, theme, &check)?
     } else {
         None
     };
     let new_document = if file.new_path.is_some() && new_literal.is_none() {
-        gitturtle_preview::mermaid::preview(new, new_name, 1600, &check)?
+        gitturtle_preview::mermaid::preview_with_theme(new, new_name, 1600, theme, &check)?
     } else {
         None
     };

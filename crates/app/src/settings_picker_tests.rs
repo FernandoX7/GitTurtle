@@ -3154,7 +3154,7 @@ fn a_focused_switch_draws_the_button_ring_whole_and_moves_nothing(cx: &mut TestA
         settle(cx);
     };
     select(cx, false);
-    for (interface, height) in [(13, 2400.), (18, 4000.)] {
+    for (interface, height) in [(13, 3000.), (18, 5000.)] {
         cx.simulate_resize(size(px(1440.), px(height)));
         cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
         cx.update(|window, cx| window.blur(cx));
@@ -3221,7 +3221,7 @@ fn a_focused_switch_draws_the_button_ring_whole_and_moves_nothing(cx: &mut TestA
         );
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-    cx.simulate_resize(size(px(1440.), px(2400.)));
+    cx.simulate_resize(size(px(1440.), px(3000.)));
     cx.update(|window, cx| window.blur(cx));
 
     // The Follow system switch, hovered: unchecked, then checked.

@@ -228,12 +228,20 @@ fn panels(surface: Surface) -> &'static [Panel] {
             Within("settings-section: History columns", "settings-scroll"),
         ),
         panel(
+            "Code & diff",
+            Within("settings-section: Code & diff", "settings-scroll"),
+        ),
+        panel(
             "Projects",
             Within("settings-section: Projects", "settings-scroll"),
         ),
         panel(
             "Git identity",
             Within("settings-section: Git identity", "settings-scroll"),
+        ),
+        panel(
+            "Custom commands",
+            Within("settings-section: Custom commands", "settings-scroll"),
         ),
     ];
     match surface {
@@ -274,8 +282,10 @@ const INSPECTOR: &[(Surface, &str)] = &[
 const SETTINGS_SECTIONS: &[(Surface, &str)] = &[
     (Surface::Settings, "Appearance"),
     (Surface::Settings, "History columns"),
+    (Surface::Settings, "Code & diff"),
     (Surface::Settings, "Projects"),
     (Surface::Settings, "Git identity"),
+    (Surface::Settings, "Custom commands"),
 ];
 
 const OFFSETS: &[Offset] = &[
@@ -353,6 +363,12 @@ const OFFSETS: &[Offset] = &[
         by: || px(13.) + appearance::ui_size(4.875),
         reason: "the branch line's 13 px branch glyph stands at the edge, its name after \
                  the 0.375 rem gap",
+    },
+    Offset {
+        panel: Some(&[(Surface::Working, "composer")]),
+        by: || px(16.) + appearance::ui_size(6.5),
+        reason: "the composer heading's 16 px commit glyph stands at the edge, its title after \
+                 the 0.5 rem gap",
     },
     Offset {
         panel: Some(&[(Surface::ProjectHub, "project action")]),

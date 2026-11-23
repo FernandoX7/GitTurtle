@@ -596,19 +596,29 @@ impl GitTurtle {
                 // as the menu opened, they reviewed the commit a `git reset`
                 // outside the app had moved HEAD off, which the review then
                 // refused.
-                let (gone, wait, paused, head) =
-                    owner.upgrade().map_or((true, None, true, None), |owner| {
-                        let owner = owner.read(cx);
-                        (
-                            false,
-                            owner.menu_wait(),
-                            owner.integration_state.is_some(),
-                            owner
-                                .work_status
-                                .as_ref()
-                                .and_then(|status| status.head.clone()),
-                        )
-                    });
+                let (gone, wait, paused, head, has_profile, has_template) =
+                    owner
+                        .upgrade()
+                        .map_or((true, None, true, None, false, false), |owner| {
+                            let owner = owner.read(cx);
+                            (
+                                false,
+                                owner.menu_wait(),
+                                owner.integration_state.is_some(),
+                                owner
+                                    .work_status
+                                    .as_ref()
+                                    .and_then(|status| status.head.clone()),
+                                owner.profile.as_ref().is_some_and(|p| {
+                                    !p.name.trim().is_empty() && !p.email.trim().is_empty()
+                                }),
+                                owner
+                                    .profile
+                                    .as_ref()
+                                    .and_then(|p| p.commit_template.as_deref())
+                                    .is_some(),
+                            )
+                        });
                 if let Some(refresh) = tight {
                     menu = menu
                         .item(
@@ -685,6 +695,43 @@ impl GitTurtle {
                     &owner,
                     &repository,
                     |this, window, cx| this.open_stashes(window, cx),
+                );
+                let menu = menu.separator();
+                let menu = working_menu_item(
+                    menu,
+                    "Commit & Push",
+                    gone || paused,
+                    wait,
+                    &owner,
+                    &repository,
+                    |this, window, cx| this.commit_and_push(window, cx),
+                );
+                let menu = working_menu_item(
+                    menu,
+                    "Insert Signed-off-by",
+                    gone || !has_profile,
+                    wait,
+                    &owner,
+                    &repository,
+                    |this, window, cx| this.insert_signoff(window, cx),
+                );
+                let menu = working_menu_item(
+                    menu,
+                    "Apply commit.template",
+                    gone || !has_template,
+                    wait,
+                    &owner,
+                    &repository,
+                    |this, window, cx| this.apply_commit_template(window, cx),
+                );
+                let menu = working_menu_item(
+                    menu,
+                    "Recent commit messages…",
+                    gone,
+                    wait,
+                    &owner,
+                    &repository,
+                    |this, window, cx| this.open_recent_commit_messages(window, cx),
                 );
                 let Some(head) = &head else {
                     return menu;
@@ -770,11 +817,12 @@ impl GitTurtle {
         let Some(this) = owner.upgrade() else {
             return menu;
         };
-        let (paused, wait, current, compare_with) = {
+        let (paused, wait, current, compare_with, custom_commit_commands) = {
             let this = this.read(cx);
             let (paused, wait, current) = this.commit_menu_state(commit);
             let compare_with = this.compare_partner_for(&commit.oid);
-            (paused, wait, current, compare_with)
+            let custom = this.matching_custom_commands(preferences::CustomCommandScope::Commit);
+            (paused, wait, current, compare_with, custom)
         };
         commit_menu(
             menu,
@@ -784,6 +832,7 @@ impl GitTurtle {
             (paused, wait),
             current,
             compare_with,
+            custom_commit_commands,
             window,
             cx,
         )
@@ -816,6 +865,8 @@ impl GitTurtle {
         move |menu, app, window, cx| {
             let (paused, wait, current) = app.commit_menu_state(&commit);
             let compare_with = app.compare_partner_for(&commit.oid);
+            let custom_commit_commands =
+                app.matching_custom_commands(preferences::CustomCommandScope::Commit);
             commit_menu(
                 menu,
                 &owner,
@@ -824,6 +875,7 @@ impl GitTurtle {
                 (paused, wait),
                 current,
                 compare_with,
+                custom_commit_commands,
                 window,
                 cx,
             )
@@ -908,7 +960,7 @@ impl GitTurtle {
         }
     }
 
-    fn prepare_commit_recovery(
+    pub(super) fn prepare_commit_recovery(
         &mut self,
         kind: RecoveryKind,
         oid: String,
@@ -1487,6 +1539,7 @@ fn commit_menu(
     (paused, wait): (bool, Option<native_accessibility::MenuWait>),
     current: bool,
     compare_with: Option<String>,
+    custom_commit_commands: Vec<preferences::CustomCommand>,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -1579,6 +1632,48 @@ fn commit_menu(
                     &repo_more,
                     move |this, window, cx| this.open_checkout_detached(oid.clone(), window, cx),
                 );
+            }
+            {
+                let oid = commit_more.oid.clone();
+                sub = working_menu_item(
+                    sub,
+                    "Start git bisect from here…",
+                    paused,
+                    wait,
+                    &owner_more,
+                    &repo_more,
+                    move |this, window, cx| {
+                        this.open_start_bisect_dialog(Some(oid.clone()), window, cx)
+                    },
+                );
+            }
+            if !custom_commit_commands.is_empty() {
+                sub = sub.separator();
+                for cmd in &custom_commit_commands {
+                    let cmd = cmd.clone();
+                    let oid = commit_more.oid.clone();
+                    let label = cmd.name.clone();
+                    let owner = owner_more.clone();
+                    let repo = repo_more.clone();
+                    sub = sub.item(PopupMenuItem::new(label).disabled(wait.is_some()).on_click(
+                        move |_, window, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                if this.path == repo && this.page == AppPage::Repository {
+                                    let branch =
+                                        this.work_status.as_ref().and_then(|s| s.branch.clone());
+                                    this.run_custom_command(
+                                        cmd.clone(),
+                                        branch,
+                                        Some(oid.clone()),
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            });
+                        },
+                    ));
+                }
             }
             {
                 let oid = commit_more.oid.clone();
@@ -2104,6 +2199,8 @@ struct StashForm {
     selected_paths: Option<Vec<PathBuf>>,
     name: Entity<InputState>,
     include_untracked: bool,
+    keep_index: bool,
+    staged_only: bool,
     error: Option<String>,
     /// Whether the line beneath the fields says that what its last review
     /// was refused for has gone, the integration paused or the conflicts
@@ -2130,13 +2227,15 @@ impl StashForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let name = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Describe the work you are pausing"));
+            .new(|cx| InputState::new(window, cx).placeholder("WIP on current branch (optional)"));
         Self {
             owner,
             repository,
             selected_paths,
             name,
             include_untracked: false,
+            keep_index: false,
+            staged_only: false,
             error: None,
             pause_ended: None,
             opened: 0,
@@ -2145,12 +2244,9 @@ impl StashForm {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.pause_ended = None;
         let name = self.name.read(cx).value().to_string();
-        if name.trim().is_empty() {
-            self.error = Some("Give this stash a name so you can find it later.".into());
-            cx.notify();
-            return false;
-        }
         let include_untracked = self.include_untracked;
+        let keep_index = self.keep_index;
+        let staged_only = self.staged_only;
         let selected_paths = self.selected_paths.clone();
         let form = cx.entity();
         let failure: Failure = Box::new(move |error, window, cx| {
@@ -2163,18 +2259,42 @@ impl StashForm {
         self.owner.update(cx, |this, cx| {
             if this.path != self.repository { return false; }
             this.read_recovery(move |repo| {
-                let plan = repo.stash_create_plan_for_paths(include_untracked, selected_paths.as_deref())?;
-                let scope_note = if let Some(paths) = &plan.selected_paths {
+                let plan = repo.stash_create_plan_with_options(
+                    include_untracked,
+                    keep_index,
+                    staged_only,
+                    selected_paths.as_deref(),
+                )?;
+                let effective_name = if name.trim().is_empty() {
+                    let branch_label = if plan.current.branch.trim().is_empty() {
+                        "HEAD"
+                    } else {
+                        plan.current.branch.trim()
+                    };
+                    format!("WIP on {branch_label}")
+                } else {
+                    name.trim().to_owned()
+                };
+                let scope_note = if staged_only {
+                    "Only currently staged changes will be saved to the stash and unstaged/cleared; unstaged and untracked files remain.".to_owned()
+                } else if let Some(paths) = &plan.selected_paths {
                     format!(
-                        "Only the {} chosen will be stashed and cleared from this working copy; other files stay intact.",
-                        crate::counted(paths.len(), "selected file", "selected files")
+                        "Only the {} chosen will be stashed and cleared from this working copy; other files stay intact.{}",
+                        crate::counted(paths.len(), "selected file", "selected files"),
+                        if keep_index { " Staged changes stay in the index (--keep-index)." } else { "" }
                     )
                 } else if include_untracked {
-                    "Tracked staged/unstaged changes and untracked files are saved and removed from this working copy. Ignored files remain.".to_owned()
+                    format!(
+                        "Tracked staged/unstaged changes and untracked files are saved and removed from this working copy. Ignored files remain.{}",
+                        if keep_index { " Staged changes stay in the index (--keep-index)." } else { "" }
+                    )
                 } else {
-                    "Tracked staged and unstaged changes will be saved separately, then removed from this working copy. Untracked and ignored files remain.".to_owned()
+                    format!(
+                        "Tracked staged and unstaged changes will be saved separately, then removed from this working copy. Untracked and ignored files remain.{}",
+                        if keep_index { " Staged changes stay in the index (--keep-index)." } else { "" }
+                    )
                 };
-                let mut explanation = format!("Save “{name}” from {}. {scope_note}", plan.current.branch);
+                let mut explanation = format!("Save “{effective_name}” from {}. {scope_note}", plan.current.branch);
                 append_paths(&mut explanation, &plan.affected_paths);
                 Ok(Prepared::Confirmation { title: "Save changes to stash".into(), explanation, action: "Save stash", command: RecoveryCommand::CreateStash { plan, name }.into() })
             }, Some(failure), window, cx)
@@ -2184,19 +2304,61 @@ impl StashForm {
 impl Render for StashForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let staged_disabled =
+            self.include_untracked || self.keep_index || self.selected_paths.is_some();
         div().flex().flex_col().gap_3()
             .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(
                 match &self.selected_paths {
                     Some(paths) => format!(
-                        "Pause {} in a named snapshot while keeping other working files untouched.",
+                        "Pause {} in a stash snapshot while keeping other working files untouched.",
                         crate::counted(paths.len(), "selected file", "selected files")
                     ),
-                    None => "Pause the current work and keep a named snapshot you can inspect before restoring.".to_owned(),
+                    None => "Pause the current work and keep a stash snapshot you can inspect before restoring.".to_owned(),
                 }
             ))
-            .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
-            .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
-                .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))
+            .child(div().flex().flex_col().gap_1().child("Stash name (optional)").child(Input::new(&self.name).aria_label("Stash name")))
+            .child(
+                Checkbox::new("stash-include-untracked")
+                    .label("Include untracked files")
+                    .checked(self.include_untracked)
+                    .disabled(self.staged_only)
+                    .on_click(cx.listener(|this, checked, _, cx| {
+                        this.include_untracked = *checked;
+                        if this.include_untracked {
+                            this.staged_only = false;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Checkbox::new("stash-keep-index")
+                    .label("Keep staged changes (--keep-index)")
+                    .checked(self.keep_index)
+                    .disabled(self.staged_only)
+                    .on_click(cx.listener(|this, checked, _, cx| {
+                        this.keep_index = *checked;
+                        if this.keep_index {
+                            this.staged_only = false;
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(self.selected_paths.is_none(), |col| {
+                col.child(
+                    Checkbox::new("stash-staged-only")
+                        .label("Stash staged changes only (--staged)")
+                        .checked(self.staged_only)
+                        .disabled(staged_disabled)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.staged_only = *checked;
+                            if this.staged_only {
+                                this.include_untracked = false;
+                                this.keep_index = false;
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
             .children(form_line(
                 self.error.as_deref(),
                 self.pause_ended,
@@ -3866,6 +4028,240 @@ impl StashBrowser {
         });
     }
 
+    fn pop_stash_entry(
+        &mut self,
+        stash: gitturtle_core::StashEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let restore_index = self.restore_index;
+        let repository = self.repository.path().to_owned();
+        let request = RestoreRequest {
+            stash: stash.oid.clone(),
+            restore_index,
+            generation: self.generation,
+        };
+        let browser = cx.entity().downgrade();
+        let shown = browser.clone();
+        let refused = request.clone();
+        let held = window.focused(cx).map(|focus| focus.downgrade());
+        let failure: Failure = Box::new(move |message, window, cx| {
+            if let Some(browser) = browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
+                browser.update(cx, |browser, cx| {
+                    if browser.answered(&refused) {
+                        browser.refuse(message, held, window, cx);
+                    }
+                });
+            }
+        });
+        let asked = request.clone();
+        let reviewing: Reviewing = Box::new(move |window, cx| {
+            let answers = shown
+                .upgrade()
+                .filter(|_| window.has_active_dialog(cx))
+                .is_some_and(|browser| browser.update(cx, |browser, _| browser.answered(&asked)));
+            if answers {
+                window.close_dialog(cx);
+            }
+            answers
+        });
+        let started = self.owner.update(cx, |this, cx| {
+            if this.path.as_ref() != Some(&repository) {
+                return None;
+            }
+            this.prepare_recovery(
+                move |repo| {
+                    let plan = repo.stash_apply_plan(&stash, restore_index)?;
+                    let mut explanation = format!(
+                        "Apply “{}” ({}) onto {} at {} and remove it from the stash list if it applies cleanly.\n\n{}\n\nIf conflicts occur, Git keeps the stash saved so no work is lost.",
+                        stash.name,
+                        short_oid(&stash.oid),
+                        plan.current.branch,
+                        short_oid(&plan.current.head),
+                        if restore_index {
+                            "Restore the original staged state as well as working files."
+                        } else {
+                            "Restore tracked changes into the working files without recreating the stash's staged state."
+                        }
+                    );
+                    append_paths(&mut explanation, &plan.affected_paths);
+                    Ok(Prepared::Confirmation {
+                        title: "Pop stash".into(),
+                        explanation,
+                        action: "Pop stash",
+                        command: RecoveryCommand::PopStash { plan }.into(),
+                    })
+                },
+                Some(failure),
+                Some(reviewing),
+                window,
+                cx,
+            )
+            .then_some(this.recovery.generation)
+        });
+        if let Ok(Some(read)) = started {
+            self.restoring = Some((request, read));
+            self.forget_restore_line(cx);
+            cx.notify();
+        }
+    }
+
+    fn create_branch_from_stash_entry(
+        &mut self,
+        stash: gitturtle_core::StashEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let repository = self.repository.path().to_owned();
+        let accepted = self.owner.upgrade().is_some_and(|owner| {
+            let owner = owner.read(cx);
+            owner.path.as_ref() == Some(&repository) && owner.operation_busy.is_none()
+        });
+        if !accepted {
+            return;
+        }
+        let acted = window.focused(cx).filter(|_| {
+            self.inspection_focus.contains_focused(window, cx)
+                || self.stash_focus.is_focused(window)
+                || self.refresh_focus.is_focused(window)
+        });
+        self.cancel_restore(cx);
+        self.spoken_refresh = None;
+        self.read_owed = false;
+        let browser = cx.entity();
+        let reopen_owner = self.owner.clone();
+        let reopen: crate::integration::Cancelled = std::rc::Rc::new(move |window, cx| {
+            let (browser, acted) = (browser.clone(), acted.clone());
+            let _ = reopen_owner.update(cx, |this, cx| {
+                this.reopen_stashes(browser, acted, window, cx)
+            });
+        });
+        let repo = self.repository.clone();
+        let owner = self.owner.clone();
+        let branch_input = cx.new(|cx| InputState::new(window, cx).placeholder("new-branch-name"));
+        branch_input.focus_handle(cx).focus(window, cx);
+        let error_slot: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        window.close_dialog(cx);
+        let _ = owner.update(cx, |this, _| {
+            this.recovery.browser = None;
+        });
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let p = palette(cx);
+            let labels = crate::appearance::labels(cx);
+            let branch_input = branch_input.clone();
+            let submit_input = branch_input.clone();
+            let error_slot = std::rc::Rc::clone(&error_slot);
+            let submit_error = std::rc::Rc::clone(&error_slot);
+            let stash = stash.clone();
+            let repo = repo.clone();
+            let owner = owner.clone();
+            let repository = repository.clone();
+            let reopen_cancel = std::rc::Rc::clone(&reopen);
+            let current_error = error_slot.borrow().clone();
+            dialog
+                .title("Create branch from stash")
+                .width(appearance::dialog_width(px(480.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(crate::appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .child(format!(
+                                    "Create a new branch at the base commit of “{}” ({}), apply the stash, and drop it if it applies cleanly.",
+                                    stash.name,
+                                    short_oid(&stash.oid)
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child("Branch name")
+                                .child(Input::new(&branch_input).aria_label("New branch name")),
+                        )
+                        .when_some(current_error, |col, err| {
+                            col.child(
+                                div()
+                                    .id("stash-branch-error")
+                                    .role(Role::Alert)
+                                    .aria_label(err.clone())
+                                    .text_size(crate::appearance::ui_text(11.))
+                                    .text_color(rgb(labels.warning))
+                                    .child(err),
+                            )
+                        }),
+                )
+                .footer(crate::tags::dialog_footer("Create branch", Some("Cancel")))
+                .on_cancel(move |_, window, cx| {
+                    reopen_cancel(window, cx);
+                    true
+                })
+                .on_ok(move |_, window, cx| {
+                    let branch = submit_input.read(cx).value().trim().to_owned();
+                    if branch.is_empty() {
+                        *submit_error.borrow_mut() = Some("Enter a branch name.".into());
+                        window.refresh();
+                        return false;
+                    }
+                    let stash = stash.clone();
+                    let repo = repo.clone();
+                    let repository = repository.clone();
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path.as_ref() != Some(&repository)
+                            || this.operation_busy.is_some()
+                        {
+                            return;
+                        }
+                        this.recovery.generation = this.recovery.generation.wrapping_add(1);
+                        let expected_gen = this.recovery.generation;
+                        let response = this.operations.submit_read(move || {
+                            repo.stash_branch_plan(&stash)
+                        });
+                        cx.spawn_in(window, async move |this, cx| {
+                            let Ok(result) = response.await else {
+                                return;
+                            };
+                            let _ = this.update_in(cx, |this, window, cx| {
+                                if this.path.as_ref() != Some(&repository)
+                                    || this.recovery.generation != expected_gen
+                                    || this.operation_busy.is_some()
+                                {
+                                    return;
+                                }
+                                match result {
+                                    Ok(plan) => {
+                                        this.write(
+                                            WriteCommand::Recovery(
+                                                RecoveryCommand::BranchFromStash { plan, branch }
+                                                    .into(),
+                                            ),
+                                            "Creating branch from stash…",
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        this.operation_error =
+                                            Some(crate::views::OperationFailure::of(&err));
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        })
+                        .detach();
+                    });
+                    true
+                })
+        });
+    }
+
     fn render_stash_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(stash) = self.page.as_ref().and_then(|page| page.entries.get(index)) else {
             return div().into_any_element();
@@ -3935,6 +4331,35 @@ impl StashBrowser {
                     cx.listener(move |this, _, window, cx| this.select_stash(index, window, cx)),
                 ),
         )
+        .app_context_menu({
+            let browser = cx.entity().downgrade();
+            let row_stash = stash.clone();
+            let (refused, _) = self.refusal(cx);
+            move |menu, _, _| {
+                let b_pop = browser.clone();
+                let b_branch = browser.clone();
+                let s_pop = row_stash.clone();
+                let s_branch = row_stash.clone();
+                menu.item(PopupMenuItem::new("Pop stash…").disabled(refused).on_click(
+                    move |_, window, cx| {
+                        let stash = s_pop.clone();
+                        let _ = b_pop.update(cx, |this, cx| {
+                            this.pop_stash_entry(stash, window, cx);
+                        });
+                    },
+                ))
+                .item(
+                    PopupMenuItem::new("Create branch from stash…")
+                        .disabled(refused)
+                        .on_click(move |_, window, cx| {
+                            let stash = s_branch.clone();
+                            let _ = b_branch.update(cx, |this, cx| {
+                                this.create_branch_from_stash_entry(stash, window, cx);
+                            });
+                        }),
+                )
+            }
+        })
         .into_any_element()
     }
 
@@ -4799,6 +5224,31 @@ impl Render for StashBrowser {
                     .child(button("refresh-stashes", "", "refresh", false).track_focus(&self.refresh_focus).debug_selector(|| "refresh-stashes".into()).accessibility_label(self.refresh_name()).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.refresh_saved_stashes(window, cx)))))
                 .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").track_focus(&list_focus).relative().flex_1().min_h_0().flex().flex_col()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        let mods = event.keystroke.modifiers;
+                        if !mods.control && !mods.platform && !mods.alt {
+                            if event.keystroke.key == "p"
+                                && !mods.shift
+                                && let Some(stash) = this
+                                    .selected
+                                    .and_then(|i| this.page.as_ref()?.entries.get(i))
+                                    .cloned()
+                            {
+                                cx.stop_propagation();
+                                this.pop_stash_entry(stash, window, cx);
+                                return;
+                            }
+                            if event.keystroke.key == "b"
+                                && !mods.shift
+                                && let Some(stash) = this
+                                    .selected
+                                    .and_then(|i| this.page.as_ref()?.entries.get(i))
+                                    .cloned()
+                            {
+                                cx.stop_propagation();
+                                this.create_branch_from_stash_entry(stash, window, cx);
+                                return;
+                            }
+                        }
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
                             cx.stop_propagation();
                             this.select_stash(index, window, cx);

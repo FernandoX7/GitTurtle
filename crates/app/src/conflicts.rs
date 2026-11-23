@@ -582,11 +582,12 @@ impl ConflictView {
     }
 
     fn prepare_readers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for side in if self.base { vec![0] } else { vec![1, 2] } {
+        let language = crate::language_for_path(&self.presentation.snapshot.path);
+        for side in if self.base { vec![1, 0, 2] } else { vec![1, 2] } {
             if self.readers[side].is_none()
                 && let Some(source) = self.reader_source(side)
             {
-                self.readers[side] = Some(text::editor(source, "text", None, window, cx));
+                self.readers[side] = Some(text::editor(source, language, None, window, cx));
             }
         }
     }
@@ -723,6 +724,12 @@ impl ConflictView {
         }
     }
 
+    pub(super) fn apply_tab_width(&self, width: u8, cx: &mut App) {
+        for reader in self.readers.iter().flatten() {
+            crate::text::apply_tab_width(reader, width, cx);
+        }
+    }
+
     /// One version's side: its header, its text where it has a reader, and
     /// otherwise a message saying why. `drawn` is false where the column is
     /// only measured, which needs the header and the message but no editor.
@@ -851,7 +858,13 @@ impl ConflictView {
         // scrolled, and where it does not they keep their least height and
         // the rest its own, and the column scrolls.
         let body = self
-            .review_column(lines, room, Some((&cue, laid.clone())), cx)
+            .review_column(
+                bounds.size.width,
+                lines,
+                room,
+                Some((&cue, laid.clone())),
+                cx,
+            )
             .when(reserve, |body| body.pr(crate::tags::ScrollCue::gutter()))
             .flex_1()
             .min_h_0()
@@ -935,7 +948,7 @@ impl ConflictView {
         {
             self.measures += 1;
         }
-        let column = self.review_column(lines, room, None, cx);
+        let column = self.review_column(size.width, lines, room, None, cx);
         let height = crate::in_frame::measured_height(column, size.width, window, cx);
         #[cfg(test)]
         {
@@ -977,6 +990,7 @@ impl ConflictView {
     /// the draft its height alone.
     fn review_column(
         &mut self,
+        width: Pixels,
         lines: f32,
         room: Pixels,
         drawn: Option<(&crate::tags::ScrollCue, Rc<Cell<Option<LayoutId>>>)>,
@@ -1042,7 +1056,16 @@ impl ConflictView {
             .map(|editor| editor.focus_handle(cx));
         let drawn = laid.is_some();
         let sides = if self.base {
-            vec![self.render_side(0, room, drawn, cx)]
+            if width >= px(720.) {
+                // Wide 3-way layout: [Current | Base | Incoming] side-by-side.
+                vec![
+                    self.render_side(1, room, drawn, cx),
+                    self.render_side(0, room, drawn, cx),
+                    self.render_side(2, room, drawn, cx),
+                ]
+            } else {
+                vec![self.render_side(0, room, drawn, cx)]
+            }
         } else {
             vec![
                 self.render_side(1, room, drawn, cx),

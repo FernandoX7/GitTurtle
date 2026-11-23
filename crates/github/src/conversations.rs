@@ -604,6 +604,40 @@ impl<T: Transport> Client<T> {
         Ok(thread)
     }
 
+    pub(crate) fn set_pull_draft(
+        &mut self,
+        pull: &CapturedPull,
+        node_id: &str,
+        draft: bool,
+        control: &OperationControl,
+    ) -> Result<String> {
+        validate_id(node_id)?;
+        let (mutation, field) = if draft {
+            (
+                "mutation GitTurtleConvertToDraft($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id isDraft } } }",
+                "convertPullRequestToDraft",
+            )
+        } else {
+            (
+                "mutation GitTurtleMarkReady($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id isDraft } } }",
+                "markPullRequestReadyForReview",
+            )
+        };
+        let data = self.graphql(mutation.to_owned(), json!({ "id": node_id }), true, control)?;
+        let returned_id = data[field]["pullRequest"]["id"].as_str();
+        let actual = data[field]["pullRequest"]["isDraft"].as_bool();
+        ensure!(
+            returned_id == Some(node_id) && actual == Some(draft),
+            "GitHub did not confirm the requested draft state for pull request #{}. Refresh explicitly.",
+            pull.number
+        );
+        Ok(format!(
+            "Pull request #{} marked as {}",
+            pull.number,
+            if draft { "draft" } else { "ready for review" }
+        ))
+    }
+
     pub fn reply_to_thread(
         &mut self,
         target: &CapturedThread,

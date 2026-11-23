@@ -10,6 +10,7 @@ const MESSAGE_MARKER: &str = "rebase-merge/gitturtle-message-edit";
 pub enum RebaseAction {
     Pick,
     Reword,
+    Edit,
     Squash,
     Fixup,
     Drop,
@@ -20,6 +21,7 @@ impl RebaseAction {
         match self {
             Self::Pick => "Pick",
             Self::Reword => "Reword",
+            Self::Edit => "Edit",
             Self::Squash => "Squash",
             Self::Fixup => "Fixup",
             Self::Drop => "Drop",
@@ -86,7 +88,7 @@ impl InteractiveRebasePlan {
                 RebaseAction::Squash | RebaseAction::Fixup => {
                     ensure!(preceding, "Squash and Fixup need a preceding kept commit")
                 }
-                RebaseAction::Pick | RebaseAction::Reword => preceding = true,
+                RebaseAction::Pick | RebaseAction::Reword | RebaseAction::Edit => preceding = true,
                 RebaseAction::Drop => (),
             }
         }
@@ -270,12 +272,14 @@ impl GitRepository {
             .rfind(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
             .unwrap_or_default();
         let reword = matches!(last.split_whitespace().next(), Some("reword" | "r"));
+        let edit_stop = matches!(last.split_whitespace().next(), Some("edit" | "e"));
         let amend = read("rebase-merge/amend")?.map(|bytes| text(trim_line(&bytes)));
         let native_edit = read(MESSAGE_MARKER)?.map(|bytes| text(trim_line(&bytes)));
-        let amend_reword = (native_edit.as_ref() == operation.head.as_ref()
-            && native_edit.is_some()
-            && operation.staged_paths.is_empty())
-            || (reword && amend.is_some());
+        let amend_reword = !edit_stop
+            && ((native_edit.as_ref() == operation.head.as_ref()
+                && native_edit.is_some()
+                && operation.staged_paths.is_empty())
+                || (reword && amend.is_some()));
         ensure!(
             !(reword
                 && message.is_some()
@@ -284,6 +288,14 @@ impl GitRepository {
                 && amend.is_none()),
             "This interrupted external reword has no confirmed message checkpoint. Use your Git editor to amend its message and continue; native Continue will not silently skip the edit. Abort and Keep files remain available."
         );
+        // An intentional `edit` stop leaves `rebase-merge/message` on disk even
+        // though no message-editor prompt is pending; let the user amend/commit
+        // in Working Changes and continue cleanly without requiring a message.
+        let message = if edit_stop && operation.paused_for_edit {
+            None
+        } else {
+            message
+        };
         Ok(InteractiveRebaseResume {
             root: self.path.clone(),
             operation,

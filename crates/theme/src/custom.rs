@@ -365,12 +365,16 @@ pub struct ReadabilityIssue {
 
 impl ReadabilityForeground {
     /// The palette tokens this color is read from: the token itself, or for a
-    /// graph lane the canvas and text whose brightness chooses the lane set
-    /// ([`Palette::is_light`]).
+    /// graph lane the canvas, text (light/dark mode), and accent (harmonized
+    /// OKLCH hue seed) that determine [`crate::palette_colors`].
     pub fn tokens(self) -> impl Iterator<Item = TokenKind> {
         match self {
-            Self::Token(kind) => [Some(kind), None],
-            Self::Lane(_) => [Some(TokenKind::Canvas), Some(TokenKind::Text)],
+            Self::Token(kind) => [Some(kind), None, None],
+            Self::Lane(_) => [
+                Some(TokenKind::Canvas),
+                Some(TokenKind::Text),
+                Some(TokenKind::Accent),
+            ],
         }
         .into_iter()
         .flatten()
@@ -1333,7 +1337,10 @@ mod tests {
             marked(Fg(Muted), SelectedRowHover, Contrast),
             [Selected, Muted, Accent]
         );
-        assert_eq!(marked(Lane(2), On(Hover), Contrast), [Canvas, Hover, Text]);
+        assert_eq!(
+            marked(Lane(2), On(Hover), Contrast),
+            [Canvas, Hover, Text, Accent]
+        );
         assert_eq!(
             marked(Fg(Selected), On(Hover), Step),
             [Canvas, Panel, Subtle, Hover, Selected, Accent]
@@ -1577,10 +1584,20 @@ mod tests {
                     hover: 0xafafaf,
                     ..porcelain
                 },
-                [0, 1, 2, 3, 5]
-                    .into_iter()
-                    .map(|lane| (Lane(lane), On(Hover), 3.))
-                    .collect(),
+                {
+                    let hover = 0xafafaf;
+                    let failing: Vec<_> = crate::palette_colors(porcelain)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|&(_, color)| contrast(color, hover) < 3.)
+                        .map(|(lane, _)| (Lane(lane), On(Hover), 3.))
+                        .collect();
+                    assert!(
+                        !failing.is_empty(),
+                        "at least one graph lane must fail on 0xafafaf"
+                    );
+                    failing
+                },
             ),
             (
                 "selected surface",

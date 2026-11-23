@@ -160,6 +160,13 @@ impl State {
             active.previous.rescale_code(ratio, cx);
         }
     }
+    pub(super) fn apply_tab_width(&self, width: u8, cx: &mut App) {
+        if let Some(active) = &self.active {
+            active.context.apply_tab_width(width, cx);
+            active.lineage.apply_tab_width(width, cx);
+            active.previous.apply_tab_width(width, cx);
+        }
+    }
     pub(super) fn refresh_theme(&self, cx: &mut App) {
         if let Some(active) = &self.active {
             active.context.refresh_theme(cx);
@@ -169,6 +176,15 @@ impl State {
     }
     pub(super) fn is_active(&self) -> bool {
         self.active.is_some()
+    }
+    pub(super) fn comparison_range(&self) -> Option<(String, String)> {
+        let active = self.active.as_ref()?;
+        match &active.target {
+            Target::Comparison(comparison) if !comparison.after_working => {
+                Some((comparison.base_oid.clone(), comparison.after.oid.clone()))
+            }
+            _ => None,
+        }
     }
     fn depth(&self) -> usize {
         self.active
@@ -980,6 +996,8 @@ impl GitTurtle {
                         self.markdown_view.as_ref().map(|_| "Rendered Markdown")
                     }
                     (_, TextMode::Diagrams) => Some("Mermaid diagrams"),
+                    (_, TextMode::Table) => Some("Table preview"),
+                    (_, TextMode::Formatted) => Some("Formatted preview"),
                     _ => None,
                 };
                 view.map_or(("Loading text…".into(), true), |view| {
@@ -1387,6 +1405,12 @@ impl GitTurtle {
             Some(scope) => format!("{details}\n{scope}").into(),
             None => details.clone().into(),
         };
+        let export_range = match &active.target {
+            Target::Comparison(c) if !c.after_working => {
+                Some((c.base_oid.clone(), c.after.oid.clone()))
+            }
+            _ => None,
+        };
         div().id("revision-inspector").debug_selector(|| "revision-inspector".into()).size_full().min_h_0().flex().flex_col().bg(rgb(p.panel)).border_l_1().border_color(rgb(p.border))
             // Quick source omits the changed-file list. Focus waits on this
             // visible inspector while the file is read (`files_focus`), so
@@ -1403,7 +1427,26 @@ impl GitTurtle {
                 .child(native_accessibility::text("revision-title", title).font_weight(FontWeight::SEMIBOLD))
                 .child(native_accessibility::static_text(div().id("revision-identities").debug_selector(|| "revision-identities".into()).child(details).children(scope_line.map(|scope| crate::PhraseLine::new(WORKING_SCOPE_ID, scope))), spoken).text_size(crate::appearance::ui_text(11.)))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Targets stay pinned while you inspect files. Refresh reviews current refs. No checkout or download."))
-                .child(button("change-revisions","Choose targets…","",false).track_focus(&active.targets_focus).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx))))))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(button("change-revisions","Choose targets…","",false).track_focus(&active.targets_focus).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx))))
+                        .when_some(export_range, |row, (base_oid, head_oid)| {
+                            row.child(
+                                button("export-range-patch", "Export .patch…", "", false)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.export_range_as_patch_dialog(
+                                            base_oid.clone(),
+                                            head_oid.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        }),
+                )))
             .when(!self.is_quick_source(), |element| element.child(self.render_files(cx)))
             // Where a click has put focus here beside the text, and through a
             // re-read that leaves it here. Not while the text pane holds it,
@@ -1415,6 +1458,560 @@ impl GitTurtle {
             })
             .into_any_element()
     }
+
+    pub(super) fn export_range_as_patch_dialog(
+        &mut self,
+        base_oid: String,
+        head_oid: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let return_focus = window.focused(cx);
+        let cancel = gitturtle_core::HistoryCancellation::default();
+        let cancel_worker = cancel.clone();
+        let base_label = short_oid(&base_oid);
+        let head_label = short_oid(&head_oid);
+        let state: Entity<(bool, Result<String, String>)> = cx.new(|_| (true, Ok(String::new())));
+        let state_ref = state.downgrade();
+        let response = self
+            .preferences_writer
+            .submit_read(move || repo.format_patch_range(&base_oid, &head_oid, &cancel_worker));
+        cx.spawn_in(window, async move |_, cx| {
+            let result = response
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("Patch export stopped unexpectedly.")));
+            let _ = cx.update(|window, cx| {
+                let _ = state_ref.update(cx, |entry, cx| {
+                    *entry = (false, result.map_err(|err| format!("{err:#}")));
+                    cx.notify();
+                });
+                window.refresh();
+            });
+        })
+        .detach();
+        let repo_root = self.repository.as_ref().map(|r| r.path().to_path_buf());
+        let owner = cx.entity().downgrade();
+        let save_status: Entity<Option<String>> = cx.new(|_| None);
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let colors = appearance::palette(cx);
+            let accent_label = colors.small_label(colors.accent, &[colors.panel]);
+            let removed_label = colors.small_label(colors.removed, &[colors.panel]);
+            let (loading, result) = state.read(cx).clone();
+            let note = save_status.read(cx).clone();
+            let cancel_close = cancel.clone();
+            let cancel_dismiss = cancel.clone();
+            let close_focus = return_focus.clone();
+            let dismiss_focus = return_focus.clone();
+            let suggested_name = format!("{base_label}-{head_label}.patch");
+            let body = if loading {
+                div()
+                    .id("export-patch-loading")
+                    .role(Role::Status)
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(colors.muted))
+                    .child("Formatting patch range…")
+                    .into_any_element()
+            } else {
+                match &result {
+                    Ok(patch) => {
+                        let preview: String = patch.chars().take(16_384).collect();
+                        let truncated = patch.len() > preview.len();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(appearance::ui_text(11.))
+                                    .text_color(rgb(colors.muted))
+                                    .child(format!(
+                                        "{} formatted ({base_label}..{head_label}){}",
+                                        crate::counted(patch.len(), "byte", "bytes"),
+                                        if truncated {
+                                            " · preview truncated, copy/save keeps full patch"
+                                        } else {
+                                            ""
+                                        }
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("export-patch-preview")
+                                    .max_h(px(300.))
+                                    .overflow_y_scroll()
+                                    .p_2()
+                                    .rounded(px(7.))
+                                    .border_1()
+                                    .border_color(rgb(colors.border))
+                                    .bg(rgb(colors.canvas))
+                                    .text_size(appearance::code_text())
+                                    .child(preview),
+                            )
+                            .when_some(note, |el, msg| {
+                                el.child(
+                                    div()
+                                        .id("export-patch-save-status")
+                                        .role(Role::Status)
+                                        .aria_label(msg.clone())
+                                        .text_size(appearance::ui_text(11.))
+                                        .text_color(rgb(accent_label))
+                                        .child(msg),
+                                )
+                            })
+                            .into_any_element()
+                    }
+                    Err(error) => div()
+                        .id("export-patch-error")
+                        .role(Role::Alert)
+                        .aria_label(error.clone())
+                        .text_size(appearance::ui_text(12.))
+                        .text_color(rgb(removed_label))
+                        .child(error.clone())
+                        .into_any_element(),
+                }
+            };
+            let patch_ok = (!loading)
+                .then(|| result.ok())
+                .flatten()
+                .filter(|text| !text.is_empty());
+            let mut footer = DialogFooter::new();
+            if let Some(patch_copy) = patch_ok {
+                let save_patch = patch_copy.clone();
+                let save_dir = repo_root.clone();
+                let save_owner = owner.clone();
+                let save_status_handle = save_status.clone();
+                footer = footer
+                    .child(
+                        button("copy-exported-patch", "Copy patch", "copy", false).on_click(
+                            move |_, window, cx| {
+                                copy_feedback::copy(window, cx, None, "patch", patch_copy.clone());
+                            },
+                        ),
+                    )
+                    .child(
+                        button("save-exported-patch", "Save .patch…", "", true).on_click(
+                            move |_, window, cx| {
+                                let dir = save_dir
+                                    .clone()
+                                    .or_else(|| std::env::current_dir().ok())
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                let prompt = cx.prompt_for_new_path(&dir, Some(&suggested_name));
+                                let bytes = save_patch.as_bytes().to_vec();
+                                let owner = save_owner.clone();
+                                let status = save_status_handle.downgrade();
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        let Ok(Ok(Some(dest))) = prompt.await else {
+                                            return;
+                                        };
+                                        let write_path = dest.clone();
+                                        let req = cx.update(|_, cx| {
+                                            owner
+                                                .update(cx, |this, _| {
+                                                    this.preferences_writer.submit(move || {
+                                                        preferences::atomic_write(
+                                                            &write_path,
+                                                            &bytes,
+                                                        )
+                                                    })
+                                                })
+                                                .ok()
+                                        });
+                                        let msg = match req {
+                                            Ok(Some(rx)) => match rx.await {
+                                                Ok(Ok(())) => {
+                                                    format!("Saved patch to {}", dest.display())
+                                                }
+                                                Ok(Err(err)) => {
+                                                    format!("Could not save patch: {err:#}")
+                                                }
+                                                Err(_) => "Could not save patch.".into(),
+                                            },
+                                            _ => "Could not save patch.".into(),
+                                        };
+                                        let _ = cx.update(|window, cx| {
+                                            let _ = status.update(cx, |slot, cx| {
+                                                *slot = Some(msg);
+                                                cx.notify();
+                                            });
+                                            window.refresh();
+                                        });
+                                    })
+                                    .detach();
+                            },
+                        ),
+                    );
+            }
+            footer = footer.child(
+                crate::tags::dialog_cancel("close-export-patch", "Close").on_click(
+                    move |_, window, cx| {
+                        cancel_close.cancel();
+                        window.close_dialog(cx);
+                        if let Some(focus) = &close_focus {
+                            focus.focus(window, cx);
+                        }
+                        window.refresh();
+                    },
+                ),
+            );
+            dialog
+                .title(format!("Export patch · {base_label}..{head_label}"))
+                .width(appearance::dialog_width(px(680.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(body)
+                .footer(footer)
+                .on_cancel(move |_, window, cx| {
+                    cancel_dismiss.cancel();
+                    if let Some(focus) = &dismiss_focus {
+                        focus.focus(window, cx);
+                    }
+                    true
+                })
+        });
+    }
+
+    pub(super) fn apply_patch_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
+            return;
+        }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        if repo.is_bare() {
+            self.operation_error = Some("Open a working copy to apply a patch.".into());
+            cx.notify();
+            return;
+        }
+        let return_focus = window.focused(cx);
+        let owner = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx).rows(10).placeholder(
+                "Paste unified diff or git format-patch output, or load a .patch file…",
+            )
+        });
+        #[derive(Default)]
+        struct ApplyPatchState {
+            apply_to_index: bool,
+            three_way: bool,
+            checking: bool,
+            check_gen: u64,
+            status: String,
+            plan: Option<(gitturtle_core::PatchApplyPlan, Vec<u8>)>,
+            _input_sub: Option<Subscription>,
+        }
+        let state = cx.new(|cx| {
+            let mut s = ApplyPatchState {
+                apply_to_index: false,
+                three_way: true,
+                checking: false,
+                check_gen: 0,
+                status: "Paste or load a patch, then choose Check patch before applying.".into(),
+                plan: None,
+                _input_sub: None,
+            };
+            // Editing patch text immediately invalidates any checked plan and
+            // bumps `check_gen` so stale check replies are discarded.
+            s._input_sub = Some(cx.subscribe(
+                &input,
+                |this: &mut ApplyPatchState, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) && (this.plan.is_some() || this.checking)
+                    {
+                        this.check_gen = this.check_gen.wrapping_add(1);
+                        this.checking = false;
+                        this.plan = None;
+                        this.status =
+                            "Patch edited. Choose Check patch to verify before applying.".into();
+                        cx.notify();
+                    }
+                },
+            ));
+            s
+        });
+        let opened = input.clone();
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
+            let colors = appearance::palette(cx);
+            let accent_label = colors.small_label(colors.accent, &[colors.panel]);
+            let snapshot = state.read(cx);
+            let apply_to_index = snapshot.apply_to_index;
+            let three_way = snapshot.three_way;
+            let checking = snapshot.checking;
+            let status = snapshot.status.clone();
+            let ready = snapshot.plan.clone();
+            let state_idx = state.clone();
+            let state_3w = state.clone();
+            let state_load = state.clone();
+            let input_load = input.clone();
+            let state_check = state.clone();
+            let input_check = input.clone();
+            let repo_check = repo.clone();
+            let owner_apply = owner.clone();
+            let close_focus = return_focus.clone();
+            let dismiss_focus = return_focus.clone();
+            let apply_focus = return_focus.clone();
+            let state_cancel = state.clone();
+            dialog
+                .title("Apply patch")
+                .width(appearance::dialog_width(px(680.), window))
+                .max_h(appearance::dialog_max_height(window))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    button("load-patch-file", "Load .patch file…", "", false)
+                                        .on_click(move |_, window, cx| {
+                                            let prompt = cx.prompt_for_paths(
+                                                gpui_kit::PathPromptOptions {
+                                                    files: true,
+                                                    directories: false,
+                                                    multiple: false,
+                                                    prompt: Some("Choose a .patch file".into()),
+                                                },
+                                            );
+                                            let input = input_load.clone();
+                                            let state = state_load.clone();
+                                            window
+                                                .spawn(cx, async move |cx| {
+                                                    let Ok(Ok(Some(paths))) = prompt.await else {
+                                                        return;
+                                                    };
+                                                    let Some(path) = paths.into_iter().next() else {
+                                                        return;
+                                                    };
+                                                    // Run patch file read off the preferences_writer
+                                                    // lane, verifying regular file on the opened fd
+                                                    // with bounded Read::take.
+                                                    let read = cx
+                                                        .background_executor()
+                                                        .spawn(async move {
+                                                            read_bounded_patch_file(&path)
+                                                        })
+                                                        .await;
+                                                    let _ = cx.update(|window, cx| {
+                                                        match read {
+                                                            Ok(text) => {
+                                                                input.update(cx, |ed, cx| {
+                                                                    ed.set_value(text, window, cx)
+                                                                });
+                                                                state.update(cx, |s, cx| {
+                                                                    s.check_gen =
+                                                                        s.check_gen.wrapping_add(1);
+                                                                    s.checking = false;
+                                                                    s.plan = None;
+                                                                    s.status = "Loaded patch file. Choose Check patch to verify before applying.".into();
+                                                                    cx.notify();
+                                                                });
+                                                            }
+                                                            Err(err) => {
+                                                                state.update(cx, |s, cx| {
+                                                                    s.plan = None;
+                                                                    s.status = format!("Could not read patch file: {err:#}");
+                                                                    cx.notify();
+                                                                });
+                                                            }
+                                                        }
+                                                        window.refresh();
+                                                    });
+                                                })
+                                                .detach();
+                                        }),
+                                )
+                                .child(
+                                    gpui_kit::component::checkbox::Checkbox::new("apply-patch-3way")
+                                        .label("3-way fallback (-3)")
+                                        .checked(three_way)
+                                        .on_click(move |checked, window, cx| {
+                                            state_3w.update(cx, |s, cx| {
+                                                s.three_way = *checked;
+                                                s.check_gen = s.check_gen.wrapping_add(1);
+                                                s.checking = false;
+                                                s.plan = None;
+                                                cx.notify();
+                                            });
+                                            window.refresh();
+                                        }),
+                                )
+                                .child(
+                                    gpui_kit::component::checkbox::Checkbox::new("apply-patch-index")
+                                        .label("Stage to index (--index)")
+                                        .checked(apply_to_index)
+                                        .on_click(move |checked, window, cx| {
+                                            state_idx.update(cx, |s, cx| {
+                                                s.apply_to_index = *checked;
+                                                s.check_gen = s.check_gen.wrapping_add(1);
+                                                s.checking = false;
+                                                s.plan = None;
+                                                cx.notify();
+                                            });
+                                            window.refresh();
+                                        }),
+                                ),
+                        )
+                        .child(
+                            gpui_kit::component::input::Textarea::new(&input)
+                                .aria_label("Patch content")
+                                .h(px(220.)),
+                        )
+                        .child(
+                            div()
+                                .id("apply-patch-status")
+                                .role(Role::Status)
+                                .aria_label(status.clone())
+                                .text_size(appearance::ui_text(11.))
+                                .text_color(rgb(if ready.is_some() {
+                                    accent_label
+                                } else {
+                                    colors.muted
+                                }))
+                                .child(status),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            crate::tags::dialog_cancel("cancel-apply-patch", "Cancel").on_click(
+                                move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    if let Some(focus) = &close_focus {
+                                        focus.focus(window, cx);
+                                    }
+                                    window.refresh();
+                                },
+                            ),
+                        )
+                        .child(
+                            button("check-apply-patch", "Check patch", "", false)
+                                .disabled(checking)
+                                .on_click(move |_, window, cx| {
+                                    let bytes = input_check.read(cx).value().as_bytes().to_vec();
+                                    let (idx, three, expected_gen) = state_check.update(cx, |s, cx| {
+                                        s.check_gen = s.check_gen.wrapping_add(1);
+                                        s.checking = true;
+                                        s.plan = None;
+                                        s.status = "Checking patch with git apply --check…".into();
+                                        cx.notify();
+                                        (s.apply_to_index, s.three_way, s.check_gen)
+                                    });
+                                    window.refresh();
+                                    let repo = repo_check.clone();
+                                    let state_ref = state_check.downgrade();
+                                    window
+                                        .spawn(cx, async move |cx| {
+                                            let res = cx
+                                                .background_executor()
+                                                .spawn(async move {
+                                                    let plan =
+                                                        repo.plan_apply_patch(&bytes, idx, three)?;
+                                                    Ok::<_, anyhow::Error>((plan, bytes))
+                                                })
+                                                .await;
+                                            let _ = cx.update(|window, cx| {
+                                                let _ = state_ref.update(cx, |s, cx| {
+                                                    if s.check_gen != expected_gen {
+                                                        return;
+                                                    }
+                                                    s.checking = false;
+                                                    match res {
+                                                        Ok((plan, bytes)) => {
+                                                            s.status = format!(
+                                                                "Patch applies cleanly:\n{}",
+                                                                plan.stat_summary
+                                                            );
+                                                            s.plan = Some((plan, bytes));
+                                                        }
+                                                        Err(err) => {
+                                                            s.plan = None;
+                                                            s.status = format!("{err:#}");
+                                                        }
+                                                    }
+                                                    cx.notify();
+                                                });
+                                                window.refresh();
+                                            });
+                                        })
+                                        .detach();
+                                }),
+                        )
+                        .child(
+                            button("confirm-apply-patch", "Apply patch", "", true)
+                                .disabled(ready.is_none() || checking)
+                                .on_click(move |_, window, cx| {
+                                    if let Some((plan, patch_bytes)) = ready.clone() {
+                                        window.close_dialog(cx);
+                                        if let Some(focus) = &apply_focus {
+                                            focus.focus(window, cx);
+                                        }
+                                        let _ = owner_apply.update(cx, |this, cx| {
+                                            this.write_from(
+                                                gitturtle_core::WriteCommand::ApplyPatch {
+                                                    plan: Arc::new(plan),
+                                                    patch_bytes,
+                                                },
+                                                "Applying patch…",
+                                                None,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                        window.refresh();
+                                    }
+                                }),
+                        ),
+                )
+                .on_cancel(move |_, window, cx| {
+                    state_cancel.update(cx, |s, _| {
+                        s.check_gen = s.check_gen.wrapping_add(1);
+                        s.checking = false;
+                    });
+                    if let Some(focus) = &dismiss_focus {
+                        focus.focus(window, cx);
+                    }
+                    true
+                })
+        });
+        window.on_next_frame(move |window, cx| {
+            opened.update(cx, |ed, cx| ed.focus(window, cx));
+        });
+    }
+}
+
+fn read_bounded_patch_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
+    let link_meta = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        !link_meta.file_type().is_symlink(),
+        "Patch file cannot be a symbolic link."
+    );
+    let mut file = std::fs::File::open(path)?;
+    let meta = file.metadata()?;
+    anyhow::ensure!(
+        meta.file_type().is_file(),
+        "Patch path must be a regular file."
+    );
+    anyhow::ensure!(
+        meta.len() <= MAX_PATCH_BYTES as u64,
+        "Patch file exceeds the 4 MiB limit."
+    );
+    let mut bytes = Vec::with_capacity((meta.len() as usize).min(MAX_PATCH_BYTES));
+    std::io::Read::by_ref(&mut file)
+        .take((MAX_PATCH_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_PATCH_BYTES && !bytes.contains(&0),
+        "Patch file must be plain UTF-8 text of at most 4 MiB."
+    );
+    String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("Patch file is not valid UTF-8."))
 }
 
 /// The width walk (`width_walk`) reads Compare local revisions once its

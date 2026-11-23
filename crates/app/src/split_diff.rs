@@ -367,6 +367,12 @@ impl SplitView {
         cx.notify();
     }
 
+    pub fn apply_tab_width(&self, width: u8, cx: &mut App) {
+        for editor in &self.editors {
+            crate::text::apply_tab_width(editor, width, cx);
+        }
+    }
+
     pub fn navigate_change(&mut self, forward: bool, cx: &mut Context<Self>) {
         let state = self.editors[0].read(cx);
         let visible = state.visible_row_range().map_or(0, |range| range.start);

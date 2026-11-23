@@ -87,6 +87,7 @@ pub struct DiffView {
     change_index: Option<usize>,
     column_width: f32,
     single_column: bool,
+    soft_wrap: bool,
     label: SharedString,
     partial: Option<Arc<PartialActions>>,
     selection: LineSelection,
@@ -1267,6 +1268,17 @@ impl DiffView {
         &self.label
     }
 
+    pub fn set_soft_wrap(&mut self, wrap: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.soft_wrap == wrap {
+            return;
+        }
+        self.soft_wrap = wrap;
+        self.editor.update(cx, |state, cx| {
+            state.set_soft_wrap(wrap, window, cx);
+        });
+        cx.notify();
+    }
+
     pub fn refresh_numbered(
         &mut self,
         rows: Arc<[LineNumbers]>,
@@ -1377,6 +1389,7 @@ pub fn new_numbered(
             change_index: None,
             column_width,
             single_column,
+            soft_wrap: false,
             label: label.into(),
             partial: None,
             selection: LineSelection::default(),
@@ -1434,6 +1447,7 @@ impl Render for DiffView {
         let row_count = rows.len();
         let column_width = self.column_width * crate::appearance::code_scale();
         let single_column = self.single_column;
+        let soft_wrap = self.soft_wrap;
         let action_width = if self.partial.is_some() {
             f32::from(crate::appearance::ui_size(ACTION_WIDTH))
         } else {
@@ -1482,7 +1496,12 @@ impl Render for DiffView {
                     // Match Editor's default trailing space; bound the deferred
                     // scroll before layout, which applies its own final clamp.
                     let bottom_padding = (text_bounds.size.height / 2.).max(line_height * 3.);
-                    let content_height = (line_height * row_count as f32 + bottom_padding)
+                    let display_rows = if soft_wrap {
+                        state.display_map().display_row_count().max(row_count)
+                    } else {
+                        row_count
+                    };
+                    let content_height = (line_height * display_rows as f32 + bottom_padding)
                         .max(text_bounds.size.height);
                     let min_y = (state.input_bounds().size.height - content_height).min(px(0.));
                     if let Some(next) = pending_scroll.advance(old_offset, delta.y, min_y) {
@@ -1531,6 +1550,7 @@ impl Render for DiffView {
                             &rows,
                             column_width,
                             single_column,
+                            soft_wrap,
                             numbered_bounds,
                             window,
                             cx,
@@ -1780,14 +1800,50 @@ impl DiffView {
         // sides by the whole jump, 40,000 checkboxes for 20,000 rows.
         let moved = -shift / line_height;
         let rows = partial.rows.len();
-        let first = visible
-            .start
-            .saturating_add_signed(moved.floor() as isize)
-            .min(rows);
-        let end = visible
-            .end
-            .saturating_add_signed(moved.ceil() as isize)
-            .min(rows);
+        let display_map = self.soft_wrap.then(|| state.display_map());
+        let (first, end) = if let Some(dm) = display_map {
+            let total_display = dm.display_row_count();
+            let base_d_start = if visible.start < rows {
+                dm.buffer_line_to_display_row(visible.start)
+            } else {
+                total_display
+            };
+            let base_d_end = if visible.end > 0 && rows > 0 {
+                dm.buffer_line_to_display_row_range(visible.end.saturating_sub(1).min(rows - 1))
+                    .map_or(total_display, |range| range.end)
+            } else {
+                0
+            };
+            let d_first = base_d_start
+                .saturating_add_signed(moved.floor() as isize)
+                .min(total_display);
+            let d_end = base_d_end
+                .saturating_add_signed(moved.ceil() as isize)
+                .min(total_display);
+            let b_first = if d_first < total_display {
+                dm.display_row_to_buffer_line(d_first).min(rows)
+            } else {
+                rows
+            };
+            let b_end = if d_end > 0 && total_display > 0 {
+                (dm.display_row_to_buffer_line(d_end.saturating_sub(1).min(total_display - 1)) + 1)
+                    .min(rows)
+            } else {
+                0
+            };
+            (b_first, b_end.max(b_first))
+        } else {
+            (
+                visible
+                    .start
+                    .saturating_add_signed(moved.floor() as isize)
+                    .min(rows),
+                visible
+                    .end
+                    .saturating_add_signed(moved.ceil() as isize)
+                    .min(rows),
+            )
+        };
         let action = self.action();
         let (refused, dimmed) = (self.partial_busy, self.dimmed());
         // The Stage hunk a press focused stays built while its row is out of
@@ -1807,7 +1863,8 @@ impl DiffView {
         let mut elements = Vec::new();
         let mut discard_overlays = Vec::new();
         for row in (first..end).chain(pressed) {
-            let y = top + line_height * row as f32;
+            let display_row = display_map.map_or(row, |dm| dm.buffer_line_to_display_row(row));
+            let y = top + line_height * display_row as f32;
             match &partial.rows[row] {
                 PartialRow::None => {}
                 PartialRow::Hunk(ids) => {
@@ -2118,7 +2175,12 @@ impl DiffView {
             return false;
         };
         let y = event.position().y;
-        let top = bounds.origin.y + height * row as f32;
+        let display_row = if self.soft_wrap {
+            state.display_map().buffer_line_to_display_row(row)
+        } else {
+            row
+        };
+        let top = bounds.origin.y + height * display_row as f32;
         // Scroll offsets are applied while painting the editor. Reject a click
         // delivered while a control from the previous geometry is relocating.
         y >= top && y < top + height
@@ -2610,11 +2672,16 @@ impl Viewport {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "gutter painting takes editor, rows, column width, palette, soft_wrap, bounds, window, and context"
+)]
 fn paint_gutter(
     editor: &Entity<EditorState>,
     rows: &[LineNumbers],
     column_width: f32,
     single_column: bool,
+    soft_wrap: bool,
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
@@ -2634,38 +2701,62 @@ fn paint_gutter(
             rgb(palette.border),
         ));
     }
-    let state = editor.read(cx);
-    let (Some(text_bounds), Some(line_height), Some(visible)) = (
-        state.text_bounds(),
-        state.line_height(),
-        state.visible_row_range(),
-    ) else {
-        return;
+    let (text_bounds, line_height, visible_entries) = {
+        let state = editor.read(cx);
+        let (Some(text_bounds), Some(line_height), Some(visible)) = (
+            state.text_bounds(),
+            state.line_height(),
+            state.visible_row_range(),
+        ) else {
+            return;
+        };
+        let input_bounds = state.input_bounds();
+        let top = bounds.origin.y.max(input_bounds.origin.y);
+        let bottom = (bounds.origin.y + bounds.size.height)
+            .min(input_bounds.origin.y + input_bounds.size.height);
+        if bottom <= top {
+            return;
+        }
+        let display_map = soft_wrap.then(|| state.display_map());
+        // `visible_row_range()` returns buffer-line indices; expand each visible
+        // buffer line into all of its wrapped display rows so the gutter stays
+        // aligned at every scroll offset under soft wrap.
+        let visible_lines = visible.start.min(rows.len())..visible.end.min(rows.len());
+        let mut entries: Vec<(usize, usize, bool)> = Vec::with_capacity(visible_lines.len());
+        for buffer_line in visible_lines {
+            if let Some(dm) = display_map {
+                let total_display = dm.display_row_count();
+                if let Some(range) = dm.buffer_line_to_display_row_range(buffer_line) {
+                    let end = range.end.min(total_display);
+                    for display_row in range.start..end {
+                        entries.push((display_row, buffer_line, display_row == range.start));
+                    }
+                }
+            } else {
+                entries.push((buffer_line, buffer_line, true));
+            }
+        }
+        (text_bounds, line_height, (top, bottom, entries))
     };
-    let input_bounds = state.input_bounds();
-    let top = bounds.origin.y.max(input_bounds.origin.y);
-    let bottom = (bounds.origin.y + bounds.size.height)
-        .min(input_bounds.origin.y + input_bounds.size.height);
-    if bottom <= top {
-        return;
-    }
+    let (top, bottom, visible_entries) = visible_entries;
     let mask = ContentMask {
         bounds: Bounds::new(
             point(bounds.origin.x, top),
             size(bounds.size.width, bottom - top),
         ),
     };
-    let visible = visible.start.min(rows.len())..visible.end.min(rows.len());
     let font = window.text_style().font();
     window.with_content_mask(Some(mask), |window| {
-        for row in visible {
+        for (display_row, row, is_first_wrap_row) in visible_entries {
             // GPUI's public text_bounds already includes the applied scroll
             // offset. Adding scroll_offset again would double-scroll the gutter.
-            let y = text_bounds.origin.y + line_height * row as f32;
+            let y = text_bounds.origin.y + line_height * display_row as f32;
             if y + line_height <= top || y >= bottom {
                 continue;
             }
-            let numbers = rows[row];
+            let Some(&numbers) = rows.get(row) else {
+                continue;
+            };
             let (color, background) = match (numbers.old, numbers.new) {
                 _ if single_column => (palette.muted, None),
                 (Some(_), None) => (labels.removed, Some(palette.removed_background)),
@@ -2680,6 +2771,9 @@ fn paint_gutter(
                     ),
                     rgb(background),
                 ));
+            }
+            if !is_first_wrap_row {
+                continue;
             }
             for (column, number) in [numbers.old, numbers.new]
                 .into_iter()
@@ -4458,6 +4552,52 @@ mod tests {
                 n(Some(5), Some(9)),
                 n(None, None),
             ]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn soft_wrap_display_map_expands_long_buffer_lines_without_panicking(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let long_line = "x".repeat(400);
+        let patch = format!("@@ -1,3 +1,3 @@\n-{long_line}\n+{long_line}\n tail\n");
+        let presentation = PatchPresentation::prepare(&patch);
+        let (window, cx) = cx.add_window_view(|window, cx| {
+            let (editor, _) = crate::text::editor_with_decorations(
+                &patch,
+                "diff",
+                Some(&presentation),
+                window,
+                cx,
+            );
+            let view = new(editor, &presentation, window, cx);
+            view.update(cx, |view, cx| view.set_soft_wrap(true, window, cx));
+            gpui_kit::component::Root::new(view, window, cx)
+        });
+        cx.simulate_resize(gpui_kit::size(px(320.), px(240.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let view = cx.update(|_, cx| {
+            window
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<DiffView>()
+                .expect("diff view")
+        });
+        let (rows, wrapped_rows) = cx.update(|_, cx| {
+            let state = view.read(cx).editor.read(cx);
+            let dm = state.display_map();
+            let range = dm.buffer_line_to_display_row_range(1);
+            (dm.display_row_count(), range.map(|r| r.len()).unwrap_or(0))
+        });
+        assert!(
+            rows >= 4,
+            "display map must retain all buffer lines: {rows}"
+        );
+        assert!(
+            wrapped_rows >= 1,
+            "buffer line 1 must map into display rows"
         );
     }
 }

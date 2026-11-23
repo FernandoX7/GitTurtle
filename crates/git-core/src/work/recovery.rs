@@ -141,6 +141,11 @@ pub struct ResetPlan {
 pub struct StashCreatePlan {
     pub current: RecoveryHead,
     pub include_untracked: bool,
+    /// Preserve already-staged index entries in the working tree (`--keep-index`).
+    pub keep_index: bool,
+    /// Stash only staged index changes (`--staged`, mutually exclusive with
+    /// `include_untracked`, `keep_index`, and `selected_paths`).
+    pub staged_only: bool,
     /// When `Some`, stash only these selected paths (expanded for renames);
     /// when `None`, stash all eligible working changes.
     pub selected_paths: Option<Vec<PathBuf>>,
@@ -157,6 +162,14 @@ pub struct StashApplyPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StashBranchPlan {
+    pub current: RecoveryHead,
+    pub stash: StashEntry,
+    pub base_oid: String,
+    pub affected_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryCommand {
     CreateStash {
         plan: StashCreatePlan,
@@ -164,6 +177,13 @@ pub enum RecoveryCommand {
     },
     ApplyStash {
         plan: StashApplyPlan,
+    },
+    PopStash {
+        plan: StashApplyPlan,
+    },
+    BranchFromStash {
+        plan: StashBranchPlan,
+        branch: String,
     },
     DropStash {
         stash: StashEntry,
@@ -323,7 +343,7 @@ impl GitRepository {
     }
 
     pub fn stash_create_plan(&self, include_untracked: bool) -> Result<StashCreatePlan> {
-        self.stash_create_plan_for_paths(include_untracked, None)
+        self.stash_create_plan_with_options(include_untracked, false, false, None)
     }
 
     pub fn stash_create_plan_for_paths(
@@ -331,6 +351,22 @@ impl GitRepository {
         include_untracked: bool,
         selected_paths: Option<&[PathBuf]>,
     ) -> Result<StashCreatePlan> {
+        self.stash_create_plan_with_options(include_untracked, false, false, selected_paths)
+    }
+
+    pub fn stash_create_plan_with_options(
+        &self,
+        include_untracked: bool,
+        keep_index: bool,
+        staged_only: bool,
+        selected_paths: Option<&[PathBuf]>,
+    ) -> Result<StashCreatePlan> {
+        if staged_only {
+            ensure!(
+                !include_untracked && !keep_index && selected_paths.is_none(),
+                "Stashing only staged changes (--staged) cannot be combined with Include untracked, Keep index, or selected paths."
+            );
+        }
         let (current, status) = self.recovery_head()?;
         let normalized_selected = match selected_paths {
             Some(paths) => {
@@ -345,26 +381,36 @@ impl GitRepository {
             }
             None => None,
         };
-        let entries: Vec<_> = match normalized_selected.as_deref() {
-            Some(paths) => status
+        let entries: Vec<_> = if staged_only {
+            status
                 .entries
                 .iter()
-                .filter(|entry| {
-                    paths.iter().any(|path| {
-                        entry.path == *path
-                            || entry.original_path.as_deref() == Some(path.as_path())
+                .filter(|entry| entry.staged.is_some())
+                .collect()
+        } else {
+            match normalized_selected.as_deref() {
+                Some(paths) => status
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        paths.iter().any(|path| {
+                            entry.path == *path
+                                || entry.original_path.as_deref() == Some(path.as_path())
+                        })
                     })
-                })
-                .collect(),
-            None => status
-                .entries
-                .iter()
-                .filter(|entry| !entry.untracked || include_untracked)
-                .collect(),
+                    .collect(),
+                None => status
+                    .entries
+                    .iter()
+                    .filter(|entry| !entry.untracked || include_untracked)
+                    .collect(),
+            }
         };
         ensure!(
             !entries.is_empty(),
-            if normalized_selected.is_some() {
+            if staged_only {
+                "There are no staged changes to stash."
+            } else if normalized_selected.is_some() {
                 "None of the selected files have changes to stash."
             } else {
                 "There are no changes to stash with this untracked-file choice"
@@ -393,6 +439,8 @@ impl GitRepository {
         Ok(StashCreatePlan {
             current,
             include_untracked,
+            keep_index,
+            staged_only,
             selected_paths: normalized_selected,
             affected_paths,
             worktree_token,
@@ -458,6 +506,31 @@ impl GitRepository {
         })
     }
 
+    pub fn stash_branch_plan(&self, stash: &StashEntry) -> Result<StashBranchPlan> {
+        let (current, status) = self.recovery_head()?;
+        ensure!(
+            !status.entries.iter().any(|entry| !entry.untracked),
+            "Commit, stash, or discard local changes before creating a branch from a stash."
+        );
+        let snapshot = self.stash_snapshot(stash)?;
+        let affected_paths = sorted_paths(
+            snapshot
+                .staged
+                .iter()
+                .chain(&snapshot.unstaged)
+                .chain(&snapshot.untracked)
+                .flat_map(|change| change.old_path.iter().chain(&change.new_path).cloned())
+                .collect(),
+        );
+        self.protect_recovery_paths(&status, &affected_paths)?;
+        Ok(StashBranchPlan {
+            current,
+            stash: stash.clone(),
+            base_oid: snapshot.base_oid,
+            affected_paths,
+        })
+    }
+
     pub fn execute_recovery(&self, operation: &RecoveryCommand) -> Result<WriteOutcome> {
         ensure!(
             !self.bare,
@@ -468,29 +541,57 @@ impl GitRepository {
         let creates_commit;
         match operation {
             RecoveryCommand::CreateStash { plan, name } => {
-                validate_recovery_message(name, "Enter a name for the stash")?;
+                let effective_name = if name.trim().is_empty() {
+                    let branch_label = if plan.current.branch.trim().is_empty() {
+                        "HEAD"
+                    } else {
+                        plan.current.branch.trim()
+                    };
+                    format!("WIP on {branch_label}")
+                } else {
+                    name.trim().to_owned()
+                };
+                validate_recovery_message(&effective_name, "Enter a name for the stash")?;
                 ensure!(
-                    !name.contains(['\r', '\n']),
+                    !effective_name.contains(['\r', '\n']),
                     "Use one line for the stash name"
                 );
                 ensure!(
-                    self.stash_create_plan_for_paths(
+                    self.stash_create_plan_with_options(
                         plan.include_untracked,
-                        plan.selected_paths.as_deref()
+                        plan.keep_index,
+                        plan.staged_only,
+                        plan.selected_paths.as_deref(),
                     )? == *plan,
                     "The branch, index, or included working files changed. Review the stash contents again."
                 );
                 if plan.selected_paths.is_some() {
-                    command.args(["--literal-pathspecs", "stash", "push", "--message", name]);
+                    command.args([
+                        "--literal-pathspecs",
+                        "stash",
+                        "push",
+                        "--message",
+                        &effective_name,
+                    ]);
                     if plan.include_untracked {
                         command.arg("--include-untracked");
+                    }
+                    if plan.keep_index {
+                        command.arg("--keep-index");
                     }
                     command.args(["--pathspec-from-file=-", "--pathspec-file-nul"]);
                     input = Some(path_input(&plan.affected_paths)?);
                 } else {
-                    command.args(["stash", "push", "--message", name]);
-                    if plan.include_untracked {
-                        command.arg("--include-untracked");
+                    command.args(["stash", "push", "--message", &effective_name]);
+                    if plan.staged_only {
+                        command.arg("--staged");
+                    } else {
+                        if plan.include_untracked {
+                            command.arg("--include-untracked");
+                        }
+                        if plan.keep_index {
+                            command.arg("--keep-index");
+                        }
                     }
                     command.arg("--");
                 }
@@ -506,6 +607,27 @@ impl GitRepository {
                     command.arg("--index");
                 }
                 command.arg(&plan.stash.oid);
+                creates_commit = false;
+            }
+            RecoveryCommand::PopStash { plan } => {
+                ensure!(
+                    self.stash_apply_plan(&plan.stash, plan.restore_index)? == *plan,
+                    "The branch, index, stash, or affected paths changed. Review the stash pop again."
+                );
+                command.args(["stash", "pop"]);
+                if plan.restore_index {
+                    command.arg("--index");
+                }
+                command.args(["--", &plan.stash.selector]);
+                creates_commit = false;
+            }
+            RecoveryCommand::BranchFromStash { plan, branch } => {
+                self.validate_branch(branch)?;
+                ensure!(
+                    self.stash_branch_plan(&plan.stash)? == *plan,
+                    "The branch, working tree, or stash changed. Review creating a branch from this stash again."
+                );
+                command.args(["stash", "branch", branch, &plan.stash.selector]);
                 creates_commit = false;
             }
             RecoveryCommand::DropStash { stash } => {
@@ -569,10 +691,11 @@ impl GitRepository {
                 creates_commit = false;
             }
         }
-        let output = if let RecoveryCommand::ApplyStash { plan } = operation {
-            self.checked_stash_apply_output(command, &plan.stash)?
-        } else {
-            checked_write_output(command, input, WRITE_TIMEOUT)?
+        let output = match operation {
+            RecoveryCommand::ApplyStash { plan } | RecoveryCommand::PopStash { plan } => {
+                self.checked_stash_apply_output(command, &plan.stash)?
+            }
+            _ => checked_write_output(command, input, WRITE_TIMEOUT)?,
         };
         let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
             .trim()
