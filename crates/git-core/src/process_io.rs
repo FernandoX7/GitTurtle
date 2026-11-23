@@ -572,25 +572,49 @@ pub(super) mod fixtures {
             let fixture = Self {
                 directory: tempfile::tempdir().unwrap(),
             };
-            let mut command = Command::new("python3");
-            command
-                .args([
-                    "-c",
-                    "import os,sys,time
+            #[cfg(target_os = "linux")]
+            let command = {
+                // `setsid -f` + `/bin/sh` starts in ~2 ms even under heavy CI
+                // CPU load, avoiding `python3` startup spikes that could exceed
+                // 300 ms deadline tests before the detached child writes its PID.
+                let mut command = Command::new("/bin/sh");
+                command
+                    .args([
+                        "-c",
+                        "setsid -f /bin/sh -c 'if [ \"$2\" = stdin ]; then exec 1>&- 2>&-; fi; printf \"%s\" \"$$\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; exec sleep 5' holder \"$1\" \"$2\"\nwhile [ ! -s \"$1\" ]; do sleep 0.001; done",
+                        "fixture",
+                    ])
+                    .arg(fixture.marker())
+                    .arg(if input_held { "stdin" } else { "output" });
+                command
+            };
+            #[cfg(not(target_os = "linux"))]
+            let command = {
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-S",
+                        "-I",
+                        "-c",
+                        "import os,sys,time
 if os.fork() == 0:
  os.setsid()
  if sys.argv[2] == 'stdin':
   os.close(1)
   os.close(2)
- with open(sys.argv[1], 'w') as file: file.write(str(os.getpid()))
+ tmp = sys.argv[1] + '.tmp'
+ with open(tmp, 'w') as file: file.write(str(os.getpid()))
+ os.replace(tmp, sys.argv[1])
  time.sleep(5)
  os._exit(0)
 while not os.path.exists(sys.argv[1]): time.sleep(0.001)
 os._exit(0)
 ",
-                ])
-                .arg(fixture.marker())
-                .arg(if input_held { "stdin" } else { "output" });
+                    ])
+                    .arg(fixture.marker())
+                    .arg(if input_held { "stdin" } else { "output" });
+                command
+            };
             (fixture, command)
         }
 
@@ -600,7 +624,7 @@ os._exit(0)
 
         pub(crate) fn wait_ready(&self) {
             let started = Instant::now();
-            while !std::fs::read_to_string(self.marker()).is_ok_and(|pid| !pid.is_empty()) {
+            while !std::fs::read_to_string(self.marker()).is_ok_and(|pid| !pid.trim().is_empty()) {
                 assert!(started.elapsed() < Duration::from_secs(3));
                 thread::sleep(Duration::from_millis(2));
             }
@@ -611,7 +635,7 @@ os._exit(0)
         fn drop(&mut self) {
             use rustix::process::{Pid, Signal, kill_process};
             if let Ok(pid) = std::fs::read_to_string(self.marker())
-                && let Ok(pid) = pid.parse::<i32>()
+                && let Ok(pid) = pid.trim().parse::<i32>()
                 && let Some(pid) = Pid::from_raw(pid)
             {
                 let _ = kill_process(pid, Signal::KILL);

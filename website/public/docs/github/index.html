@@ -27,6 +27,7 @@
   <link rel="stylesheet" href="/styles.css?v=5">
   <link rel="stylesheet" href="/guides.css">
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home", "item": "https://gitturtle.com/"}, {"@type": "ListItem", "position": 2, "name": "Docs", "item": "https://gitturtle.com/docs/"}, {"@type": "ListItem", "position": 3, "name": "GitHub pull requests", "item": "https://gitturtle.com/docs/github/"}]}</script>
+  <script defer src="/site.js"></script>
   <script defer src="/guide.js"></script>
 </head>
 <body class="guide-page">
@@ -50,6 +51,7 @@
 <p>Complete the browser sign-in, then choose <strong>Connect GitHub CLI account</strong> in GitTurtle. The authorization is stored in macOS Keychain or the Linux desktop keyring. On Omarchy 4.5, a live check covered connecting the account, opening a pull request, disconnecting and reconnecting through the desktop keyring.</p>
 <h2 id="inspect">Inspect a pull request</h2>
 <p>Check the GitHub owner and repository, then choose <strong>Refresh PRs</strong>. Select a pull request to load its overview, head and base, checks, files and conversations. <strong>Files</strong> shows the changed-file list, and review threads can be inspected, replied to, resolved or unresolved directly. Select a file to inspect GitHub’s patch. A missing or truncated patch can limit which lines accept a comment.</p>
+<figure><a class="screenshot-link" data-screenshot="Pull request review" href="/assets/github-review.png"><img src="/assets/github-review.png" width="2960" height="1946" alt="Native GitHub pull request review panel displaying changed files, inline unified diff for src/review/session.rs, and Comment on selection controls." loading="lazy"><span class="expand-shot">Full size</span></a><figcaption>Inspect changed files, switch between patch, source and threads, and collect line comments locally before sending. Shown with the offline review fixture.</figcaption></figure>
 <h2 id="review">Collect and send a review</h2>
 <ol>
   <li>Click a changed line. For a supported range on the same side, Shift-click or use Shift with the arrow keys. Choose <strong>Comment on selection</strong> or press Enter.</li>

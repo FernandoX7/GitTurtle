@@ -2902,22 +2902,29 @@ fn is_passwordless_gnome_keyring_file(path: &std::path::Path) -> bool {
     head.trim_start().starts_with("[keyring]")
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
+#[cfg(target_os = "linux")]
 fn detect_passwordless_default_keyring() -> bool {
-    let data_dir = std::env::var_os("XDG_DATA_HOME")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(std::path::PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".local/share"))
-        });
-    data_dir.is_some_and(|dir| {
-        is_passwordless_gnome_keyring_file(&dir.join("keyrings/Default_keyring.keyring"))
-    })
+    #[cfg(test)]
+    {
+        false
+    }
+    #[cfg(not(test))]
+    {
+        let data_dir = std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .map(|home| home.join(".local/share"))
+            });
+        data_dir.is_some_and(|dir| {
+            is_passwordless_gnome_keyring_file(&dir.join("keyrings/Default_keyring.keyring"))
+        })
+    }
 }
 impl Panel {
     fn new(
@@ -2928,32 +2935,37 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Self {
         let worktree = PathText::new("Local worktree: ", repo.path());
-        #[cfg(all(target_os = "linux", not(test)))]
-        {
-            let dismissed = owner
-                .upgrade()
-                .is_some_and(|app| app.read(cx).settings.linux_plaintext_keyring_note_dismissed);
-            if !dismissed {
-                cx.spawn(async move |panel, cx| {
-                    let detected = cx
-                        .background_executor()
-                        .spawn(async { detect_passwordless_default_keyring() })
-                        .await;
-                    if detected {
-                        let _ = panel.update(cx, |this, cx| {
-                            let still_undismissed = this.owner.upgrade().is_none_or(|app| {
-                                !app.read(cx).settings.linux_plaintext_keyring_note_dismissed
-                            });
-                            if still_undismissed {
-                                this.plaintext_keyring_note = true;
-                                cx.notify();
-                            }
-                        });
-                    }
+        #[cfg(target_os = "linux")]
+        cx.spawn(async move |panel, cx| {
+            // Defer reading `owner` until after `open_github_returning_to`
+            // releases its mutable lease on `GitTurtle`.
+            let dismissed = panel
+                .read_with(cx, |this, cx| {
+                    this.owner.upgrade().is_some_and(|app| {
+                        app.read(cx).settings.linux_plaintext_keyring_note_dismissed
+                    })
                 })
-                .detach();
+                .unwrap_or(true);
+            if dismissed {
+                return;
             }
-        }
+            let detected = cx
+                .background_executor()
+                .spawn(async { detect_passwordless_default_keyring() })
+                .await;
+            if detected {
+                let _ = panel.update(cx, |this, cx| {
+                    let still_undismissed = this.owner.upgrade().is_none_or(|app| {
+                        !app.read(cx).settings.linux_plaintext_keyring_note_dismissed
+                    });
+                    if still_undismissed {
+                        this.plaintext_keyring_note = true;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
         let mut this=Self {
             review:review::ReviewState::new(window,cx),
             conversations:conversations::State::new(window,cx),
