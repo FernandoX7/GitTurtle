@@ -3789,7 +3789,9 @@ impl GitTurtle {
                 .child(div()
                     .on_children_prepainted(self.keep_in_view(terminal_focus, cx))
                     .flex()
-                    .when(narrow && !macos_terminals.is_empty(), |row| row.flex_wrap())
+                    .when(narrow && !macos_terminals.is_empty(), |row| {
+                        row.flex_wrap().justify_end()
+                    })
                     .items_center()
                     .gap_2()
                     .child(
@@ -3797,7 +3799,7 @@ impl GitTurtle {
                             .debug_selector(|| "settings-terminal-field".into())
                             .flex_1()
                             .min_w(if narrow && !macos_terminals.is_empty() {
-                                px(160.)
+                                appearance::ui_size(180.)
                             } else {
                                 px(0.)
                             })

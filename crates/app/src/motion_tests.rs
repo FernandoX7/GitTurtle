@@ -607,10 +607,19 @@ async fn heading_action_under_a_still_pointer(
     let selector: &'static str = format!("working-stage-{position}").leak();
     let pointer = cx.debug_bounds(selector).expect(selector).center();
     counted_click(cx, pointer, 1);
+    let after_click = app.read_with(cx, |app, _| {
+        (
+            app.still_pointer
+                .as_ref()
+                .map(|s| (s.at, s.position, s.area, s.moved)),
+            app.operation_busy,
+            app.operation_task.is_some(),
+        )
+    });
     press_lands(app, cx).await;
     assert!(
         app.read_with(cx, |app, _| app.still_over_moved_rows()),
-        "the rows moved under the still pointer (position={position}, action={action}, pointer={pointer:?}, mouse={:?}, still={:?}, busy={:?}, op_err={:?}, read_err={:?}, pending={}, quiet={}, rows={})",
+        "the rows moved under the still pointer (position={position}, action={action}, pointer={pointer:?}, mouse={:?}, after_click={after_click:?}, still={:?}, busy={:?}, op_err={:?}, read_err={:?}, pending={}, quiet={}, rows={})",
         cx.update(|window, _| window.mouse_position()),
         app.read_with(cx, |app, _| app
             .still_pointer
@@ -864,6 +873,14 @@ async fn arrived_under_a_still_pointer(
         Arrived::UnstageAll => long_list(cx, 2, 60).await,
         _ => six_files(cx).await,
     };
+    // These still-pointer suites test explicit clicks, not native filesystem
+    // watcher events; stop the watcher and drain pending setup work so
+    // delayed FSEvents notifications cannot race with setup clicks.
+    crate::views::tests::hold_quiet_reads_for_test(&app, cx);
+    app.update(cx, |app, _| app.automatic.reset());
+    let _ = app
+        .read_with(cx, |app, _| app.operations.submit_read(|| Ok(())))
+        .await;
     let (_, palette) = crate::appearance::test_palettes().remove(0);
     cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
     // Tall enough that six files' rows are all in view. A resize takes
@@ -1068,6 +1085,9 @@ async fn a_second_click_within_five_pixels_of_the_first_writes_nothing(cx: &mut 
                 "{at}: a press somewhere else is taken"
             );
             assert_ne!(staged_files(&fixture), staged, "{at}: it wrote");
+            app.update(cx, |app, _| app.automatic.reset());
+            cx.update(|window, _| window.remove_window());
+            cx.executor().run_until_parked();
         }
     }
 }
@@ -1143,6 +1163,9 @@ async fn a_pointer_lights_what_arrived_once_it_is_more_than_five_pixels_away(
                 "{at}: the click of a pointer that moved presses {selector}"
             );
             assert_ne!(staged_files(&fixture), staged, "{at}: it wrote");
+            app.update(cx, |app, _| app.automatic.reset());
+            cx.update(|window, _| window.remove_window());
+            cx.executor().run_until_parked();
         }
     }
 }
@@ -1179,6 +1202,9 @@ async fn a_drift_counts_from_where_the_pointer_came_to_rest(cx: &mut TestAppCont
             "{at}: the click presses Stage all"
         );
         assert_eq!(staged_files(&fixture).len(), 6, "{at}: every file staged");
+        app.update(cx, |app, _| app.automatic.reset());
+        cx.update(|window, _| window.remove_window());
+        cx.executor().run_until_parked();
     }
 }
 
