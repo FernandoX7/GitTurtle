@@ -3,12 +3,10 @@
 > Strictly `<= 60` lines (enforced by `scripts/check-agent-guidance.py`). Overwrite on task close; never append session logs here. Graduate durable lessons into `.agents/skills/` or `docs/decisions/`.
 
 - **Updated:** 2026-11-23
-- **Latest `main`:** `5f74b4a0` (all 10 roadmap PRs `#241`–`#250` merged).
-- **Active branch / PR:** `wt/polish-docs-website-ci` — Post-roadmap polish PR:
-  - **Real Linux crash fixed (`0cd37524`):** Opening **Pull requests** in non-test Linux builds panicked with a re-entrant `GitTurtle` entity read in `github_view::Panel::new`; deferred the read into the spawned task and removed the `not(test)` blind spot.
-  - **CI test flake fixed (`0cd37524`):** Replaced slow `python3` startup in `DetachedPipeHolder` (`crates/git-core/src/process_io.rs`) with native `setsid -f` + `/bin/sh` on Linux (and `python3 -S -I` on non-Linux Unix) + atomic PID marker writes so 300 ms deadline tests never race interpreter startup under CI CPU load.
-  - **Fresh `2960 × 1946` screenshots & website update:** Recaptured 11 existing + 2 new (`history-filters.png`, `github-review.png`) clean `0cd37524` native Wayland `@2x` captures, regenerated lossless tour WebPs and `gitturtle-social.png`, updated `website/public/index.html`, `/performance/` (Wave 3A/3B tables), `/docs/history-and-diffs/`, `/docs/github/`, `/releases/`, and `website/asset-provenance.json`.
-  - **Docs refreshed:** Synced `README.md`, `docs/user-guide.md`, `docs/file-previews.md` (exact 28 enabled tree-sitter grammars), `docs/validation/2026-11.md`, `docs/validation.md`, and `website/README.md`.
+- **Latest `main`:** `61141b4d` (all 10 roadmap PRs `#241`–`#250` plus polish PR `#251` merged; Quality 29/29 green).
+- **Active branch / PR:** `wt/readme-showcase` — README showcase overhaul & lockfile-backed dependency sync:
+  - Upgraded `README.md` with above-the-fold release metrics strip, full Wave 3A & Wave 3B core/monorepo benchmark table beside end-to-end UI traces, 7-crate workspace architecture and security boundary table, and pinned Rust 1.100.0 + core library versions.
+  - Registered all 26 `README.md` dependency mentions in `docs/doc-manifest.json` (`lockfile_crate_mentions`) so `scripts/check-docs-sync.py` validates them against `Cargo.lock` on every PR.
 - **Not exercised locally:** macOS compilation/execution of `crates/app`/`crates/preview` (verified on hosted macOS CI), live physical-desktop sessions (multi-monitor Wayland/Hyprland, X11, KDE, GNOME, macOS), and live Cloudflare Pages deployment (`wrangler` deploy held for owner).
 - **Next concrete steps (owner-driven):**
   1. Complete deferred physical desktop QA checks below.
