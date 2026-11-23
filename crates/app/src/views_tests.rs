@@ -12,23 +12,41 @@ pub(crate) fn draw(cx: &mut VisualTestContext) {
         cx.executor().run_until_parked();
     }
 }
+/// Waits for the window's active repository-reader (`app.task`) and
+/// working-tree status (`app.status_task`) reads to land and draws the settled
+/// view.
+///
+/// Draining `app.worker` / `app.operations` directly before `run_until_parked`
+/// follows the same contract as `Worker::wait_idle` and `SerialExecutor::drain`:
+/// it waits on GitTurtle's OS worker threads while holding `TestClock` instead
+/// of parking `TestScheduler` across real-time Git subprocess I/O (whose 15 s
+/// parking guard also advances `TestClock` by wall-clock time).
 pub(crate) async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     for _ in 0..8 {
         cx.executor().run_until_parked();
-        let tasks = cx.update(|_, cx| {
-            app.update(cx, |app, _| {
-                [app.task.take(), app.status_task.take()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-            })
-        });
-        if tasks.is_empty() {
+        let (has_task, has_status) =
+            app.read_with(cx, |app, _| (app.task.is_some(), app.status_task.is_some()));
+        if !has_task && !has_status {
             break;
         }
-        for task in tasks {
-            task.await;
+        if has_task {
+            app.read_with(cx, |app, _| app.worker.wait_idle());
         }
+        if has_status {
+            app.read_with(cx, |app, _| app.operations.drain());
+        }
+    }
+    cx.executor().run_until_parked();
+    let tasks = cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            [app.task.take(), app.status_task.take()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+    });
+    for task in tasks {
+        task.await;
     }
     draw(cx);
 }
