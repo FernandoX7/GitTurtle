@@ -24,6 +24,136 @@
       "crate": "stl_io",
       "doc": "docs/file-previews.md",
       "pattern": "docs\\.rs/stl_io/([0-9]+\\.[0-9]+\\.[0-9]+)"
+    },
+    {
+      "crate": "gpui-kit",
+      "doc": "README.md",
+      "pattern": "`gpui-kit ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "gpui-pre",
+      "doc": "README.md",
+      "pattern": "`gpui-pre ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "wgpu",
+      "doc": "README.md",
+      "pattern": "`wgpu ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "tree-sitter",
+      "doc": "README.md",
+      "pattern": "`tree-sitter ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "similar",
+      "doc": "README.md",
+      "pattern": "`similar ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "accesskit",
+      "doc": "README.md",
+      "pattern": "`accesskit ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "accesskit_macos",
+      "doc": "README.md",
+      "pattern": "`accesskit_macos ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "accesskit_unix",
+      "doc": "README.md",
+      "pattern": "`accesskit_unix ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "objc2",
+      "doc": "README.md",
+      "pattern": "`objc2 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "security-framework",
+      "doc": "README.md",
+      "pattern": "`security-framework ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "ashpd",
+      "doc": "README.md",
+      "pattern": "`ashpd ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "oo7",
+      "doc": "README.md",
+      "pattern": "`oo7 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "rustix",
+      "doc": "README.md",
+      "pattern": "`rustix ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "image",
+      "doc": "README.md",
+      "pattern": "`image ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "resvg",
+      "doc": "README.md",
+      "pattern": "`resvg ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "hayro",
+      "doc": "README.md",
+      "pattern": "`hayro ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "hayro-jpeg2000",
+      "doc": "README.md",
+      "pattern": "`hayro-jpeg2000 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "markdown",
+      "doc": "README.md",
+      "pattern": "`markdown ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "mermaid-rs-renderer",
+      "doc": "README.md",
+      "pattern": "`mermaid-rs-renderer ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "ufbx",
+      "doc": "README.md",
+      "pattern": "`ufbx ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "meshopt",
+      "doc": "README.md",
+      "pattern": "`meshopt ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "stl_io",
+      "doc": "README.md",
+      "pattern": "`stl_io ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "jiff",
+      "doc": "README.md",
+      "pattern": "`jiff ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "notify",
+      "doc": "README.md",
+      "pattern": "`notify ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "ignore",
+      "doc": "README.md",
+      "pattern": "`ignore ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "sha2",
+      "doc": "README.md",
+      "pattern": "`sha2 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     }
   ],
   "constants": [
@@ -141,7 +271,7 @@
   "check_website_guides": true,
   "surface_map": [
     {
-      "code_prefixes": ["rust-toolchain.toml", "Cargo.toml"],
+      "code_prefixes": ["rust-toolchain.toml", "Cargo.toml", "Cargo.lock"],
       "docs": [
         "README.md",
         "CONTRIBUTING.md",
