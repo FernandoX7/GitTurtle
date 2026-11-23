@@ -124,11 +124,6 @@ impl Slider {
         }
     }
 
-    /// GitTurtle patch: alias for [`Self::accessibility_label`].
-    pub fn aria_label(self, label: impl Into<SharedString>) -> Self {
-        self.accessibility_label(label)
-    }
-
     /// GitTurtle patch: the value, range and step assistive technology reads,
     /// in the units shown beside the slider (gpui-base's
     /// `Slider::accessible_value`).

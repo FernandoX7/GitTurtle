@@ -50,12 +50,14 @@ codegen-units = 8
 strip = "debuginfo"
 
 # Keep the matching GPUI Kit 0.10.0 / GPUI 0.3.12 stack; supply AccessKit's
-# AT-SPI disabled state (#788) and off-screen/modal fixes under accesskit_unix
-# 0.22, macOS VoiceOver off-screen clipping parity under accesskit_macos 0.26,
-# AT-SPI cache signals libatspi accepts (#819, in accesskit_unix 0.24.1),
-# Wayland fractional-scale drawable sizing, macOS accessibility responder
-# alignment, a test-only #[gpui::test] teardown that releases each seed's app,
-# and renderer font-cache isolation for Mermaid.
+# AT-SPI disabled state (#788) and off-screen/modal/teardown fixes under
+# accesskit_unix 0.22, macOS VoiceOver off-screen clipping parity under
+# accesskit_macos 0.26, AT-SPI cache signals libatspi accepts (#819, in
+# accesskit_unix 0.24.1), Linux Wayland/X11/portal desktop integration &
+# fractional-scale drawable sizing, macOS accessibility responder alignment,
+# wgpu bounded GPU recovery & WGPU_BACKEND selection, a test-only
+# #[gpui::test] teardown that releases each seed's app, and renderer
+# font-cache / parser isolation for Mermaid.
 [patch.crates-io]
 accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
 accesskit_macos = { path = "vendor/accesskit_macos" }

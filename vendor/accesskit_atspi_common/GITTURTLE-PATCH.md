@@ -218,8 +218,8 @@ adapter for each X11 or Wayland window; `accesskit_unix` serves AT-SPI
 `Accessible.GetState` from this crate's `PlatformNode::state()`. The vendored
 `gpui-base` patch already sets the AccessKit disabled property on disabled
 Buttons; this patch lets that property reach AT-SPI. macOS uses
-`accesskit_macos` and is unaffected, so it keeps the open off-screen item
-above.
+`accesskit_macos`, which carries its own clipping parity patch in
+`vendor/accesskit_macos/GITTURTLE-PATCH.md`.
 
 The Linux-only application test
 `native_accessibility::atspi_state_tests` maps an AccessKit tree with enabled,
@@ -293,7 +293,9 @@ the window. It can go once Orca, without it, is heard speaking only the row
 Down reaches after a search took away the row it last spoke, in Keyboard
 Shortcuts and the command palette, as an Orca that does not present a move
 from a dead object's window would, or once those lists keep the rows a
-search takes away in the tree. Retire this patch, the
-`[patch.crates-io]` entry, the workspace exclusion and the `vendor/AGENTS.md`
-row when no change remains. Keep the application tests; they then cover the
-upstream crate.
+search takes away in the tree. The `Drop` cache/interface teardown change can go
+once upstream `Adapter::drop` emits `State::Defunct`, `CacheEvent::Removed`, and
+interface unregistrations for live and cached nodes before `window_destroyed`.
+Retire this patch, the `[patch.crates-io]` entry, the workspace exclusion, the
+`THIRD_PARTY_NOTICES.md` row and the `vendor/AGENTS.md` row when no change
+remains. Keep the application tests; they then cover the upstream crate.

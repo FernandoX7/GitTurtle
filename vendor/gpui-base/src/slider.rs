@@ -697,12 +697,6 @@ impl Slider {
         self
     }
 
-    /// GitTurtle patch: alias for [`Slider::accessibility_label`] preserved for
-    /// callers using the previous name.
-    pub fn aria_label(self, label: impl Into<SharedString>) -> Self {
-        self.accessibility_label(label)
-    }
-
     /// GitTurtle patch: reports `value` to assistive technology in place of
     /// the state's own value, range and step, so a screen reader reads the
     /// digits the application draws beside the slider. Its increment and

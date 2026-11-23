@@ -122,6 +122,8 @@ class RecipeTest(unittest.TestCase):
             recipe.build(normalised(wrong), self.root / "f")
 
     def test_the_example_reproduces_the_evidence_fixture(self) -> None:
+        if not EXAMPLE.is_file():
+            self.skipTest("example scenario omitted in sparse checkout")
         spec = scenario.load(EXAMPLE)
         with contextlib.redirect_stdout(io.StringIO()):
             manifest = recipe.build(spec["fixture"], self.root)

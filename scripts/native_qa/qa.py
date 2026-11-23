@@ -12,6 +12,10 @@
   python3 scripts/native_qa/qa.py privacy pack --templates /local/dir --output /local/templates.b64
   python3 scripts/native_qa/qa.py identity BASE [CANDIDATE]
   python3 scripts/native_qa/qa.py display-check [--display :1]
+  python3 scripts/native_qa/qa.py headless-check [--json FILE]
+  python3 scripts/native_qa/qa.py headless-launch --binary B --fixture F --run-dir /abs/empty [--scenario S.json]
+  python3 scripts/native_qa/qa.py macos-check [--json FILE]
+  python3 scripts/native_qa/qa.py macos-launch --binary B --fixture F --run-dir /abs/empty [--window-id WID]
 
 Exit status: 0 clean, 1 a finding (difference, privacy hit, identity problem,
 foreign process), 2 a refusal, usage error or inconclusive check.
@@ -316,6 +320,119 @@ def display_check(args) -> int:
     return status
 
 
+def headless_check(args) -> int:
+    from native_qa import headless
+
+    report = headless.probe_headless()
+    write_json(args.json, report)
+    print(f"backend: {report['backend']}")
+    print(f"xvfb: {report['xvfb'] or 'missing'}")
+    print(f"lavapipe_icd: {report['lavapipe_icd'] or 'missing'}")
+    for issue in report["issues"]:
+        print(f"MISSING: {issue}", file=sys.stderr)
+    return 0 if report["ready"] else 2
+
+
+def headless_launch(args) -> int:
+    from native_qa import headless, session
+
+    icd = args.icd or headless.find_lavapipe_icd()
+    if icd is None:
+        raise runenv.Refusal("Mesa Lavapipe ICD (lvp_icd*.json) not found; pass --icd /abs/path/to/lvp_icd.json")
+    minimum = args.window_minimum
+    if minimum is not None and (args.size[0] < minimum[0] or args.size[1] < minimum[1]):
+        raise SystemExit(f"refusing: --size {args.size[0]}x{args.size[1]} is below --window-minimum "
+                         f"{minimum[0]}x{minimum[1]}")
+    steps = session.load_scenario(args.scenario)
+    if args.preferences:
+        preferences = stores.load_file(args.preferences)
+    else:
+        preferences = stores.store_text(args.theme, args.project)
+    extra = headless.headless_env(icd, dict(args.env))
+    width, height = args.size
+    screen_w = max(headless.DEFAULT_SCREEN_WIDTH, width + 100)
+    screen_h = max(headless.DEFAULT_SCREEN_HEIGHT, height + 100)
+    with headless.XvfbSession(width=screen_w, height=screen_h) as display_name:
+        run = session.Session(
+            args.binary,
+            args.fixture,
+            args.run_dir,
+            preferences,
+            width=width,
+            height=height,
+            display=display_name,
+            scale=args.scale,
+            for_commit=args.for_commit,
+            extra_env=extra,
+            settle=args.settle,
+            backend="xtest",
+            window_minimum=args.window_minimum,
+            app_config_files=app_config_files(args.app_config),
+            backend_label=headless.BACKEND_LABEL,
+        )
+        if args.scenario:
+            run.log["header"]["scenario"] = dict(
+                path=str(args.scenario),
+                sha256=identity.sha256_file(args.scenario),
+                steps=steps,
+            )
+        try:
+            run.launch()
+            run.run(steps)
+        except BaseException as error:
+            run.log["error"] = repr(error)
+            raise
+        finally:
+            code = run.close()
+    print(f"run directory: {run.dirs.root}")
+    return 0 if code in (0, -15) and run.log["fixture_unchanged"] and not run.restore_failures else 1
+
+
+def macos_check(args) -> int:
+    from native_qa import macos
+
+    report = macos.probe_macos()
+    write_json(args.json, report)
+    print(f"backend: {report['backend']}")
+    print(f"osascript: {report['osascript'] or 'missing'}")
+    print(f"screencapture: {report['screencapture'] or 'missing'}")
+    print(f"system_events_accessible: {report['system_events_accessible']}")
+    for issue in report["issues"]:
+        print(f"MISSING: {issue}", file=sys.stderr)
+    return 0 if report["ready"] else 2
+
+
+def macos_launch(args) -> int:
+    from native_qa import macos
+
+    if args.preferences:
+        preferences = stores.load_file(args.preferences)
+    else:
+        preferences = stores.store_text(args.theme, args.project)
+    run = macos.MacosSession(
+        args.binary,
+        args.fixture,
+        args.run_dir,
+        preferences,
+        for_commit=args.for_commit,
+        extra_env=dict(args.env),
+        settle=args.settle,
+    )
+    try:
+        windows = run.launch()
+        print(f"discovered {len(windows)} window(s) for pid {run.proc.pid}")
+        if args.window_id is not None:
+            written = run.capture(args.capture_name, args.window_id)
+            print(f"captured {written}")
+    except BaseException as error:
+        run.log["error"] = repr(error)
+        raise
+    finally:
+        code = run.close()
+    print(f"run directory: {run.paths['root']}")
+    return 0 if code in (0, -15) and run.log["fixture_unchanged"] else 1
+
+
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = top.add_subparsers(dest="command", required=True)
@@ -442,6 +559,49 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--display", default=runenv.DEFAULT_DISPLAY)
     p.add_argument("--allow-pid", type=int, action="append", default=[], help="a known process that is not foreign")
     p.set_defaults(func=display_check)
+
+    p = commands.add_parser("headless-check", help="read-only check for Linux Xvfb + Lavapipe software-Vulkan readiness")
+    p.add_argument("--json", type=Path, help="write probe report JSON here")
+    p.set_defaults(func=headless_check)
+
+    p = commands.add_parser("headless-launch", help="opt-in isolated Linux launch inside a private Xvfb + Lavapipe session")
+    p.add_argument("--binary", type=Path, required=True, help="absolute path of the executable under test")
+    p.add_argument("--fixture", type=Path, required=True, help=f"repository to open, under {runenv.EVIDENCE_ROOT}/")
+    p.add_argument("--run-dir", type=Path, required=True, help="absolute, absent or empty; holds HOME, XDG_* and captures")
+    hstore = p.add_mutually_exclusive_group()
+    hstore.add_argument("--theme", default="midnight", help="built-in theme key for a generated store (default midnight)")
+    hstore.add_argument("--preferences", type=Path, help="a preferences.json to seed byte for byte")
+    p.add_argument("--project", action="append", default=[], metavar="PATH[=NAME]", help="add a project to the generated store")
+    p.add_argument("--app-config", type=key_value, action="append", default=[], metavar="NAME=PATH",
+                   help="seed PATH as NAME beside preferences.json")
+    p.add_argument("--scenario", type=Path, help="JSON list of steps (default: settle, park, capture 00-launch)")
+    p.add_argument("--size", type=size, default=(1000, 680), help="window size, default 1000x680")
+    p.add_argument("--window-minimum", type=size, metavar="WxH", help="lower WM_NORMAL_HINTS minimum before resizing")
+    p.add_argument("--scale", default=runenv.DEFAULT_SCALE, help="GPUI_X11_SCALE_FACTOR (default 1)")
+    p.add_argument("--settle", type=float, default=5.0, help="seconds after resize before the first input")
+    p.add_argument("--icd", type=Path, help="explicit path to Mesa Lavapipe lvp_icd*.json manifest")
+    p.add_argument("--env", type=key_value, action="append", default=[], metavar="KEY=VALUE", help="extra env variable")
+    p.add_argument("--for-commit", action="store_true", help=f"refuse fixtures outside {runenv.EVIDENCE_ROOT}/ or home run dirs")
+    p.set_defaults(func=headless_launch)
+
+    p = commands.add_parser("macos-check", help="read-only check for macOS osascript + screencapture native-QA tools")
+    p.add_argument("--json", type=Path, help="write probe report JSON here")
+    p.set_defaults(func=macos_check)
+
+    p = commands.add_parser("macos-launch", help="opt-in isolated macOS launch with PID-scoped window query and screencapture")
+    p.add_argument("--binary", type=Path, required=True, help="absolute path of the macOS executable under test")
+    p.add_argument("--fixture", type=Path, required=True, help=f"repository to open, under {runenv.EVIDENCE_ROOT}/")
+    p.add_argument("--run-dir", type=Path, required=True, help="absolute, absent or empty; holds isolated HOME and captures")
+    mstore = p.add_mutually_exclusive_group()
+    mstore.add_argument("--theme", default="midnight", help="built-in theme key for a generated store (default midnight)")
+    mstore.add_argument("--preferences", type=Path, help="a preferences.json to seed byte for byte")
+    p.add_argument("--project", action="append", default=[], metavar="PATH[=NAME]", help="add a project to the generated store")
+    p.add_argument("--settle", type=float, default=3.0, help="seconds after launch before querying windows")
+    p.add_argument("--window-id", type=int, help="optional CGWindowID to capture via window-scoped screencapture -x -o -l")
+    p.add_argument("--capture-name", default="00-launch", help="capture PNG stem when --window-id is given (default 00-launch)")
+    p.add_argument("--env", type=key_value, action="append", default=[], metavar="KEY=VALUE", help="extra env variable")
+    p.add_argument("--for-commit", action="store_true", help=f"refuse fixtures outside {runenv.EVIDENCE_ROOT}/ or home run dirs")
+    p.set_defaults(func=macos_launch)
     return top
 
 

@@ -50,7 +50,7 @@
 <li><a href="/docs/worktrees-and-recovery/">Review worktrees and recovery options</a> if something unexpected happened in Git.</li>
 <li><a href="/releases/#coverage">Check platform coverage</a> for your operating system and architecture.</li></ul>
 <h2 id="linux">Linux setup problems</h2>
-<dl><dt><strong>The executable reports a missing library.</strong></dt><dd>Install the runtime packages in the <a href="/install/ubuntu/">Ubuntu</a> or <a href="/install/arch-omarchy/">Arch and Omarchy</a> guide. Both need the system’s <code>libdav1d.so.7</code>. Install a working Vulkan driver for your GPU as well as the Vulkan loader.</dd>
+<dl><dt><strong>The executable reports a missing library.</strong></dt><dd>Install the runtime packages in the <a href="/install/ubuntu/">Ubuntu</a> or <a href="/install/arch-omarchy/">Arch and Omarchy</a> guide, including a working Vulkan driver for your GPU as well as the Vulkan loader. AV1 image previews optionally load <code>libdav1d.so.7</code> at runtime and are not required to start GitTurtle.</dd>
 <dt><strong>The folder picker fails.</strong></dt><dd>The picker needs the session D-Bus service <code>xdg-desktop-portal</code> and a FileChooser backend for your desktop. Install the matching backend and log out and back in if the old service is still running. You can open a repository directly with <code>~/.local/bin/gitturtle /absolute/path/to/repository</code>.</dd>
 <dt><strong>An update needs to be rolled back.</strong></dt><dd>Let active Git work finish and quit the app. If the installer saved a previous installation, the command below restores it and preserves preferences and drafts.</dd></dl>
 <pre><code>python3 "${XDG_DATA_HOME:-$HOME/.local/share}/gitturtle/install.py" --rollback</code></pre>

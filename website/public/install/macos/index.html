@@ -59,7 +59,7 @@ rustup show active-toolchain</code></pre>
 <h2 id="build">Build and open the app</h2>
 <pre><code>./scripts/package-macos.sh
 open dist/GitTurtle.app</code></pre>
-<p>The packager compiles the release executable, adds the app icon and license files, then signs the bundle locally. This development app uses an ad-hoc signature and has no notarization. In Projects, open a local Git repository or linked worktree.</p>
+<p>The packager compiles the release executable, adds the app icon and license files, then signs the bundle locally. This development app uses an ad-hoc signature and has no notarization. In Projects, open a local Git repository or linked worktree — or drop a repository folder onto the Dock icon or open a <code>gitturtle://open</code> link.</p>
 <h2 id="verify">Check the build</h2>
 <pre><code>codesign --verify --deep --strict dist/GitTurtle.app
 dist/GitTurtle.app/Contents/MacOS/gitturtle --build-info</code></pre>

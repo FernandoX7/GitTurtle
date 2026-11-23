@@ -15,3 +15,7 @@ Upstream `gpui-pre-macos` 0.3.12 migrated from deprecated `cocoa`/`objc`/`block`
 The focused patch in `src/window.rs::a11y_init` uses the pinned `accesskit_macos` `SubclassingAdapter::new` API with the live rendering view pointer (`lock.native_view.as_ptr() as *mut c_void`). The adapter retains that view. It also seeds the adapter's host-focus state using `lock.native_window().isKeyWindow()`, because initial activation may precede callback installation. Subsequent activation continues through the original window-key handler. Any returned event batch is raised after releasing the window-state lock. No focus action, settings mutation, dependency update, Git operation, or Linux behavior is added.
 
 Compilation and automated tests run on hosted macOS CI; native VoiceOver and descendant-focus behavior must be recorded against the integrated macOS binary when re-verifying native QA.
+
+## Removal
+
+Upstream target: `https://github.com/zed-industries/zed` (`crates/gpui_macos`, PR-ready single-file fix in `src/window.rs`). Remove this vendored directory, its `[patch.crates-io]` entry, workspace exclusion, `THIRD_PARTY_NOTICES.md` row, and `vendor/AGENTS.md` row once upstream `gpui-pre-macos` attaches `SubclassingAdapter` directly to the first-responder rendering `native_view` and seeds initial key-window state.

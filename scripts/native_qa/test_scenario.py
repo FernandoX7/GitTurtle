@@ -136,6 +136,8 @@ class SpecTest(unittest.TestCase):
         self.assertEqual((int(found[1]), int(found[2]) + 1), (scenario.TEXT_SIZES.start, scenario.TEXT_SIZES.stop))
 
     def test_the_example_is_valid_and_names_the_committed_crops(self) -> None:
+        if not EXAMPLE.is_file():
+            self.skipTest("example scenario omitted in sparse checkout")
         loaded = scenario.load(EXAMPLE)
         names = [crop.name for crop in scenario.committed(loaded)]
         self.assertEqual(len(names), 20)
@@ -151,14 +153,15 @@ class SpecTest(unittest.TestCase):
         # An option named like an action (a capture's `stable`) once made Session.run take a capture for a wait.
         from native_qa import session
 
-        loaded = scenario.load(EXAMPLE)
-        for step in loaded["steps"]:
-            if "guard" in step:
-                continue
-            for role in loaded["roles"]:
-                sent = play.session_step(step, role)
-                with self.subTest(step=step["index"]):
-                    self.assertEqual(len([key for key in session.STEP_KEYS if key in sent]), 1, sent)
+        if EXAMPLE.is_file():
+            loaded = scenario.load(EXAMPLE)
+            for step in loaded["steps"]:
+                if "guard" in step:
+                    continue
+                for role in loaded["roles"]:
+                    sent = play.session_step(step, role)
+                    with self.subTest(step=step["index"]):
+                        self.assertEqual(len([key for key in session.STEP_KEYS if key in sent]), 1, sent)
         self.assertFalse({option for options in scenario.STEPS.values() for option in options} & set(scenario.STEPS))
 
     def test_defaults_and_planning(self) -> None:
@@ -860,12 +863,13 @@ class SpecTest(unittest.TestCase):
                 scenario.load(path)
 
     def test_cli_check(self) -> None:
-        ok = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(EXAMPLE)],
-                            capture_output=True, text=True)
-        self.assertEqual(ok.returncode, 0, ok.stderr)
-        self.assertIn("20 committed crops", ok.stdout)
-        self.assertEqual(sorted(re.findall(r"^    (\S+\.png)  \(", ok.stdout, re.M)),
-                         sorted(path.name for path in EXAMPLE.parent.glob("*.png")))
+        if EXAMPLE.is_file():
+            ok = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(EXAMPLE)],
+                                capture_output=True, text=True)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertIn("20 committed crops", ok.stdout)
+            self.assertEqual(sorted(re.findall(r"^    (\S+\.png)  \(", ok.stdout, re.M)),
+                             sorted(path.name for path in EXAMPLE.parent.glob("*.png")))
         with tempfile.TemporaryDirectory() as scratch:
             bad = Path(scratch) / "bad.json"
             bad.write_text(json.dumps(spec(steps=[{"park": False}])))
@@ -892,11 +896,12 @@ class SpecTest(unittest.TestCase):
         self.assertIn("  HOME files seeded before each launch: a/c.txt, b.txt\n", result.stdout)
         self.assertIn("  org.a11y.Status IsEnabled set true for each launch, then restored and read back\n",
                       result.stdout)
-        plain = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(EXAMPLE)],
-                               capture_output=True, text=True)
-        self.assertNotIn("HOME files", plain.stdout)
-        self.assertNotIn("IsEnabled", plain.stdout)
-        self.assertNotIn("app configuration files", plain.stdout)
+        if EXAMPLE.is_file():
+            plain = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(EXAMPLE)],
+                                   capture_output=True, text=True)
+            self.assertNotIn("HOME files", plain.stdout)
+            self.assertNotIn("IsEnabled", plain.stdout)
+            self.assertNotIn("app configuration files", plain.stdout)
 
     def test_cli_check_names_the_app_config_files(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:

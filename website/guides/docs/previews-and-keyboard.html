@@ -12,8 +12,8 @@
 <ul>
   <li><strong>Markdown and Mermaid.</strong> Choose the rendered view for headings, lists, tables, supported diagrams and local images from the captured revision. Use Source or Diff to review the exact stored text.</li>
   <li><strong>PDF.</strong> Move between pages to inspect rendered content and available extracted text. Image-only pages can lack extractable text.</li>
-  <li><strong>3D.</strong> Orbit, pan or zoom the supported geometry. Link both cameras to compare versions at the same position, or unlink to inspect one side. STL, OBJ, FBX, GLB and selected 3MF and STEP content have bounded support. Unsupported geometry or resources are identified in the preview.</li>
-  <li><strong>Other formats.</strong> Many archive, media and office formats show metadata. When available, the platform’s explicit preview action opens a captured copy in an external viewer.</li>
+  <li><strong>3D.</strong> Orbit, pan or zoom the supported geometry. Link both cameras to compare versions at the same position, or unlink to inspect one side. STL, OBJ, FBX, GLB and selected 3MF and STEP content have bounded support; on Linux, untrusted PDF, AV1, OBJ, FBX and compressed GLB decoding runs inside a confined helper process. Unsupported geometry or resources are identified in the preview.</li>
+  <li><strong>Other formats.</strong> Many archive, media and office formats show metadata. On macOS, Quick Look previews supported captured files directly; on Linux, the explicit external-preview action opens a captured copy in your desktop viewer.</li>
 </ul>
 <h2 id="lfs">Preview an LFS file</h2>
 <p>GitTurtle uses verified local Git LFS objects when available. If only a pointer is present, inspect the object ID and size. You can review a download for that single object if you have Git LFS installed and a configured source. Browsing alone does not fetch it. The download is capped at 32 MiB and verified against its SHA-256 identity.</p>

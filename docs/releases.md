@@ -54,12 +54,13 @@ trusted-ref policy. It never creates or moves a tag.
 2. **Read-only build jobs** compile the selected explicit targets from clean
    source. They use the pinned compiler and existing dependency cache, with cache
    finish after package consumers. macOS package compilation uses the standard
-   ARM64 macOS 26 runner and verifies installed Xcode 26.3 build 17C529 before cache
-   identity. Quality uses the same selector and its release validator requires
+   ARM64 macOS 26 runner and selects the newest installed stable Xcode 26 or
+   later (`scripts/release/workflow.py select-xcode`) before cache identity.
+   Quality uses the same selector and its release validator requires
    `Rust release · macos-26` alongside the retained macOS 15 test and Clippy jobs.
-   Missing or changed tools fail without fallback. The deferred signing job stays
-   on macOS 15 with the same Xcode selector; actual signing remains a C4 requirement.
-   This [packaging-environment workaround](benchmarks/2026-09-15-ci.md#icon-compiler-environment)
+   Missing or changed tools fail without fallback. The deferred signing job also
+   runs on `macos-26` with the same Xcode selector; actual signing remains a C4
+   requirement. This [packaging-environment workaround](benchmarks/2026-09-15-ci.md#icon-compiler-environment)
    does not establish package/native compatibility or signing success. The local
    packager's full Xcode 26+ requirement is unchanged. The existing packagers require
    clean release identity and complete target-specific notices. Each extracted archive receives
@@ -164,6 +165,16 @@ attempt. Rerunning only failed jobs with an earlier context is refused; use a
 new complete reviewed run. Build timestamps/signing may change asset bytes, so a
 fresh run never establishes an identical publication retry merely by sharing a
 version number.
+
+### Owner `v0.1.0` launch runbook (held pending owner approval)
+
+All repository-side prerequisites for `v0.1.0` are prepared on `main` (complete C0 notices across all declared targets, CycloneDX 1.5 SBOM + SLSA provenance in `release.yml`, canonical GitHub Releases URL allowlist in `website/check.py`, automated `website/visual_qa.py`, and Linux tarball / AUR / `.deb` / Flatpak recipes). Remaining actions are strictly owner-driven and intentionally unexecuted:
+
+1. **Physical desktop QA:** Complete the deferred macOS (Apple Silicon, VoiceOver, Gatekeeper), Omarchy/Hyprland, and Ubuntu 24.04 GNOME desktop checks listed in [STATE.md](development/STATE.md).
+2. **Governance & signing choice:** Decide between a Linux-first `v0.1.0` (`platforms: linux`) or a Developer ID notarized macOS release (`gitturtle-macos-signing` environment + secrets + `GITTURTLE_SIGNING_CONTEXT`). Create the protected `gitturtle-release` GitHub environment with required reviewer approval and a `v*` tag protection ruleset.
+3. **Tag, rehearse, and publish:** Create signed/annotated tag `v0.1.0` on a green `main` Quality run, run `release.yml` with `publish: false` first to verify hashes/SBOM/install/rollback, then run `release.yml` with `publish: true` and approve `gitturtle-release`.
+4. **AUR & website launch:** Populate `packaging/aur/gitturtle-bin/{PKGBUILD,.SRCINFO}` from the live `v0.1.0` assets, validate with `packaging/aur/test-local.sh`, and push to AUR; switch `website/public/index.html`, `website/guides/reference/{releases,install}.html`, and `website/guides/reference/install/*.html` to verified `v0.1.0` links, run `website/build_guides.py`, `website/check.py --write-sitemap`, `website/visual_qa.py`, deploy via Wrangler Direct Upload, and verify with `website/smoke.py`.
+5. **Post-`v0.1.0` (held):** Any future opt-in auto-update feature requires an explicit owner decision amending the passive-network policy and satisfying all five pre-registered invariants in [security-review.md](development/security-review.md).
 
 ### Release contents and signing provenance
 

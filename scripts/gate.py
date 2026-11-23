@@ -761,6 +761,13 @@ def build_stages(
             reproduce="python3 scripts/dev/check_invariants.py",
         )
     )
+    stages.append(
+        Stage(
+            "vendor-audit",
+            [sys.executable, "-B", "scripts/dev/vendor_patch_audit.py"],
+            reproduce="python3 scripts/dev/vendor_patch_audit.py",
+        )
+    )
     if tier == "full":
         # Snapshot hygiene only finds `.snap.new` files already present:
         # base_env sets INSTA_UPDATE=no, so the test stages write none.
@@ -831,6 +838,13 @@ def build_stages(
                 "website-check",
                 [sys.executable, "-B", "website/check.py"],
                 reproduce="python3 -B website/check.py",
+            )
+        )
+        stages.append(
+            Stage(
+                "website-visual-qa",
+                [sys.executable, "-B", "website/visual_qa.py"],
+                reproduce="python3 -B website/visual_qa.py",
             )
         )
 

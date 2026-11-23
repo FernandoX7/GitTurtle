@@ -18,11 +18,13 @@ Run the same checks as the website CI job.
 python3 website/build_guides.py --check
 python3 website/test_check.py
 python3 website/check.py
+python3 website/visual_qa.py
+python3 -m unittest website/test_visual_qa.py
 node --check website/public/site.js
 node --check website/public/guide.js
 ```
 
-The site checker validates internal links and fragments, public file hygiene, screenshot provenance, GitHub destinations, per-page metadata, structured data, crawler rules and sitemap coverage. The [QA record](QA.md) covers browser testing. The local Python server serves `404.html` directly and ignores Cloudflare’s `_headers` rules. See [hosting and deployment checks](OPERATIONS.md) for production behavior.
+The site checker validates internal links and fragments, public file hygiene, screenshot provenance, GitHub destinations, per-page metadata, structured data, crawler rules and sitemap coverage. `website/visual_qa.py` adds automated landmark, responsive-image, contrast-token, CSS-overflow-guard and local HTTP serving checks (plus optional headless Chromium / Playwright desktop `1440×900` and mobile `390×844` light/dark layout, overflow and `axe-core` accessibility verification when `--browser` is passed). The [QA record](QA.md) covers browser testing. The local Python server serves `404.html` directly and ignores Cloudflare’s `_headers` rules. See [hosting and deployment checks](OPERATIONS.md) for production behavior.
 
 ### Navigation, motion and search
 
@@ -36,9 +38,9 @@ The homepage and guides point Open Graph and X to the same [1200 × 630 PNG](pub
 
 ## Content and release truth
 
-The site's GitHub links open the project repository. The guide articles, platform installation instructions, release status, benchmark records and notices have first-party destinations. Product guides are curated from the [repository sources](guides/README.md#content-sources). Update the relevant articles when a release changes a workflow or system requirement.
+The site's GitHub links open the project repository or its canonical GitHub Releases URLs (`allowed_github_url` in `website/check.py`). The guide articles, platform installation instructions, release status, benchmark records and notices have first-party destinations. Product guides are curated from the [repository sources](guides/README.md#content-sources). Update the relevant articles when a release changes a workflow or system requirement.
 
-The November 17, 2026 release check found no published downloads. The acquisition path currently offers builds from source for Apple Silicon Macs, Arch and Omarchy on x86-64 and AArch64, and Ubuntu 24.04 on x86-64. The [release page source](guides/reference/releases.html) records what visitors can install. When a verified release becomes available, update the homepage, installation overview, affected platform guides and release status together. Verify the actual artifact, architecture and signing status before advertising a download.
+The November 2026 release check found no published downloads. The acquisition path currently offers builds from source for Apple Silicon Macs, Arch and Omarchy on x86-64 and AArch64, and Ubuntu 24.04 on x86-64. The [release page source](guides/reference/releases.html) records what visitors can install. When a verified release becomes available, update the homepage, installation overview, affected platform guides and release status together. Verify the actual artifact, architecture and signing status before advertising a download.
 
 The performance page identifies the source build, hardware, sample size and timing boundaries of the homepage measurements. Its underlying records live in `public/performance/records/`. The 60 GB worktree story describes the owner’s experience.
 

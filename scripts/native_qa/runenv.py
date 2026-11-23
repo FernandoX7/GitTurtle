@@ -408,7 +408,7 @@ def launch_env(dirs: RunDirs, display: str = DEFAULT_DISPLAY, scale: str = DEFAU
     GIT_CONFIG_* cannot redirect the fixture or the identity.
     """
     env = {key: value for key, value in (os.environ if base is None else base).items()
-           if key != "WAYLAND_DISPLAY" and not key.startswith("GIT_")}
+           if key not in ("WAYLAND_DISPLAY", "ZED_HEADLESS") and not key.startswith("GIT_")}
     env.update({name: str(path) for name, path in dirs.paths.items()})
     env.update(DISPLAY=display, GPUI_X11_SCALE_FACTOR=str(scale))
     env.update(check_extra(extra or {}))
@@ -417,7 +417,7 @@ def launch_env(dirs: RunDirs, display: str = DEFAULT_DISPLAY, scale: str = DEFAU
 
 
 # Variables that decide where the app reads and draws, which the run records itself (display, scale) or isolates.
-RESERVED = ("DISPLAY", "GPUI_X11_SCALE_FACTOR", "DBUS_SESSION_BUS_ADDRESS")
+RESERVED = ("DISPLAY", "GPUI_X11_SCALE_FACTOR", "DBUS_SESSION_BUS_ADDRESS", "ZED_HEADLESS")
 RESERVED_PREFIXES = ("GIT_", "WAYLAND_", "XDG_")
 
 
@@ -436,6 +436,8 @@ def verify(env: dict[str, str], dirs: RunDirs, home: Path | None = None) -> None
     """The last check before exec: the app will read exactly the store that was seeded."""
     if "WAYLAND_DISPLAY" in env:
         raise Refusal("WAYLAND_DISPLAY is set; the app would not use XWayland")
+    if "ZED_HEADLESS" in env:
+        raise Refusal("ZED_HEADLESS is set; it is not a GitTurtle launch variable")
     real = operator_directories(home)
     for name in LAYOUT:
         value = env.get(name, "")

@@ -6,11 +6,13 @@ This directory contains the crates.io `gpui-base` 0.10.0 source, licensed Apache
 
 When rebasing the 0.6.0 patch set onto `gpui-base` 0.10.0:
 
-- **Dropped (upstreamed in 0.10.0):**
-  - `src/disabled_focus.rs` and disabled-focus tracking in `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, and `src/color_picker.rs` (0.10.0 keeps those focused disabled controls tracked as non-tab-stops natively; `src/link.rs` still retains the local disabled-focus guard).
+- **Dropped (upstreamed or retired in 0.10.0):**
+  - `src/disabled_focus.rs` and disabled-focus tracking in `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, and `src/toggle.rs` (0.10.0 keeps those focused disabled controls tracked as non-tab-stops natively; `src/link.rs` and `ColorSwatch` in `src/color_picker.rs` still retain the local disabled-focus guard).
   - `Switch::track_focus` caller focus handle (upstreamed in 0.10.0; `ColorSwatch::track_focus` in `src/color_picker.rs` remains locally patched).
   - `Popover` weak dismiss callback cycle fix (upstreamed in 0.10.0).
   - `FocusTrap` >100-stop wrap fix (upstreamed in 0.10.0).
+  - `Positioner::corner_following` (retired in favor of upstream `Positioner::tracked_corner_position`) and `Slider::aria_label` compatibility alias (retired in favor of upstream `Slider::accessibility_label`).
+  - Upstream `src/input/base/a11y_text.rs` is deleted and replaced by GitTurtle's bounded `src/input/base/accessible_text.rs` projection.
 - **Adapted to 0.10.0 architecture:**
   - `src/input/base/element.rs` & `src/input/editor/display_map/inline_line.rs`: `reveal_on_resize` only applies vertical margin padding when the selection actually changed (`px(0.)` on pure resize) so resizing a scrolled editor does not move the viewport when the caret is still visible; `LayoutMode::CodeEditor` permits shrinking to a single row when bounded by a short container; `inline_line.rs` exposes `shaped_line`.
   - `src/text_selection.rs`: added `TextSelectionRegistration::with_scrollable(above, below)` so virtualized `ListState` surfaces (such as the commit message view) can report overflow above/below their viewport for drag auto-scroll.
@@ -1510,3 +1512,7 @@ component kit's menu items do. `cargo test --locked -p gitturtle
 theme_editor::tests::the_open_pickers_controls_are_named_by_what_they_set`
 reads them through the theme editor's picker. Remove it when upstream names
 its sliders and popovers and lets a slider report shown units.
+
+## Removal
+
+Upstream target: `gpui-base` (GPUI Kit `crates/base`). Audit and drop individual patches on each GPUI Kit release upgrade once upstream covers them and the paired `crates/app` and `scripts/vendor-crate-test.sh vendor/gpui-base` regressions pass. Remove paired `gpui-base` and `gpui-component` patches together, then retire this directory, its `[patch.crates-io]` entry, workspace exclusion, `THIRD_PARTY_NOTICES.md` row, and `vendor/AGENTS.md` row once no local patches remain.

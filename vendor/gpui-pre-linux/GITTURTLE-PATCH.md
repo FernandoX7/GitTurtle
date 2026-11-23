@@ -14,7 +14,7 @@ The crate is the Linux and FreeBSD platform backend; its dependencies are all un
 
 ## Upstreamed in 0.3.12 (retired local patch)
 
-The Wayland text-input focus fix (upstream [zed-industries/zed#63776](https://github.com/zed-industries/zed/pull/63776), previously backported on `0.3.4`) is carried directly by `gpui-pre-linux` 0.3.12 and has been retired from this local patch. Only the Wayland fractional-scale drawable content-size patch below remains.
+The Wayland text-input focus fix (upstream [zed-industries/zed#63776](https://github.com/zed-industries/zed/pull/63776), previously backported on `0.3.4`) is carried directly by `gpui-pre-linux` 0.3.12 and has been retired from this local patch. The remaining local changes are the Wayland fractional-scale drawable content-size patch and the Linux desktop integration, IME, clipboard, and Wayland-to-X11 fallback patches documented below.
 
 ## Change: the window's content reaches the drawable's last device pixel
 

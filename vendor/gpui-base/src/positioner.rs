@@ -244,12 +244,6 @@ impl Positioner {
         }
     }
 
-    /// GitTurtle patch: places `anchor`'s corner of the popup at the point
-    /// `position` holds when the popup is prepainted, not when it is built.
-    pub fn corner_following(anchor: Anchor, position: Rc<Cell<Point<Pixels>>>) -> Self {
-        Self::corner(anchor, position.get()).tracked_corner_position(position)
-    }
-
     /// GitTurtle patch: places the popup at `position`, a pointer's place,
     /// so that it never covers the point: wholly below the pointer's device
     /// pixel row where it fits, otherwise wholly above it, otherwise on the

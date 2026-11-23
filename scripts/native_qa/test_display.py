@@ -24,6 +24,8 @@ NOT_BINARIES = [
 ]
 DRIVERS = [
     "python3 scripts/native_qa/qa.py launch --binary /b --fixture /f --run-dir /r",
+    "python3 scripts/native_qa/qa.py headless-launch --binary /b --fixture /f --run-dir /r",
+    "python3 scripts/native_qa/qa.py macos-launch --binary /b --fixture /f --run-dir /r",
     "/venv/bin/python3 -u scripts/native_qa/qa.py scenario run docs/evidence/t/scenario.json --build base=/b",
     "python3 scripts/native_qa/qa.py recheck docs/evidence/t/scenario.json --exe /c --committed docs/evidence/t",
     "/usr/bin/python3 -B /work/tools/d3_run.py cand rows midnight",
@@ -34,6 +36,8 @@ DRIVERS = [
 NOT_DRIVERS = [
     "python3 scripts/native_qa/qa.py compare a.png b.png",
     "python3 scripts/native_qa/qa.py display-check",
+    "python3 scripts/native_qa/qa.py headless-check",
+    "python3 scripts/native_qa/qa.py macos-check",
     "python3 scripts/native_qa/qa.py scenario check docs/evidence/t/scenario.json",
     "python3 scripts/native_qa/qa.py scenario fixture docs/evidence/t/scenario.json",
     "python3 scripts/native_qa/qa.py attestation --bundle /b --task t",
