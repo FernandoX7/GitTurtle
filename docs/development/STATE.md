@@ -3,10 +3,10 @@
 > Strictly `<= 60` lines (enforced by `scripts/check-agent-guidance.py`). Overwrite on task close; never append session logs here. Graduate durable lessons into `.agents/skills/` or `docs/decisions/`.
 
 - **Updated:** 2026-11-23
-- **Latest `main`:** `61141b4d` (all 10 roadmap PRs `#241`–`#250` plus polish PR `#251` merged; Quality 29/29 green).
-- **Active branch / PR:** `wt/readme-showcase` — README showcase overhaul & lockfile-backed dependency sync:
-  - Upgraded `README.md` with above-the-fold release metrics strip, full Wave 3A & Wave 3B core/monorepo benchmark table beside end-to-end UI traces, 7-crate workspace architecture and security boundary table, and pinned Rust 1.100.0 + core library versions.
-  - Registered all 26 `README.md` dependency mentions in `docs/doc-manifest.json` (`lockfile_crate_mentions`) so `scripts/check-docs-sync.py` validates them against `Cargo.lock` on every PR.
+- **Latest `main`:** `4c3c6112` (PRs `#241`–`#252` merged; Quality green).
+- **Active branch / PR:** `wt/readme-marketing` — Concise, marketing-first `README.md` refinement:
+  - Replaced "before/after speedup" framing with confident current-performance measurements in one scannable table.
+  - Trimmed dense internal jargon in favor of crisp user-facing highlights, sleek 5-row lockfile-checked stack summary (15 marquee crates synced in `docs/doc-manifest.json`), and tighter section copy.
 - **Not exercised locally:** macOS compilation/execution of `crates/app`/`crates/preview` (verified on hosted macOS CI), live physical-desktop sessions (multi-monitor Wayland/Hyprland, X11, KDE, GNOME, macOS), and live Cloudflare Pages deployment (`wrangler` deploy held for owner).
 - **Next concrete steps (owner-driven):**
   1. Complete deferred physical desktop QA checks below.

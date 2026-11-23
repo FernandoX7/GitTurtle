@@ -51,46 +51,6 @@
       "pattern": "`similar ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     },
     {
-      "crate": "accesskit",
-      "doc": "README.md",
-      "pattern": "`accesskit ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "accesskit_macos",
-      "doc": "README.md",
-      "pattern": "`accesskit_macos ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "accesskit_unix",
-      "doc": "README.md",
-      "pattern": "`accesskit_unix ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "objc2",
-      "doc": "README.md",
-      "pattern": "`objc2 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "security-framework",
-      "doc": "README.md",
-      "pattern": "`security-framework ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "ashpd",
-      "doc": "README.md",
-      "pattern": "`ashpd ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "oo7",
-      "doc": "README.md",
-      "pattern": "`oo7 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "rustix",
-      "doc": "README.md",
-      "pattern": "`rustix ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
       "crate": "image",
       "doc": "README.md",
       "pattern": "`image ([0-9]+\\.[0-9]+\\.[0-9]+)`"
@@ -106,16 +66,6 @@
       "pattern": "`hayro ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     },
     {
-      "crate": "hayro-jpeg2000",
-      "doc": "README.md",
-      "pattern": "`hayro-jpeg2000 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "markdown",
-      "doc": "README.md",
-      "pattern": "`markdown ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
       "crate": "mermaid-rs-renderer",
       "doc": "README.md",
       "pattern": "`mermaid-rs-renderer ([0-9]+\\.[0-9]+\\.[0-9]+)`"
@@ -126,34 +76,29 @@
       "pattern": "`ufbx ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     },
     {
-      "crate": "meshopt",
+      "crate": "accesskit",
       "doc": "README.md",
-      "pattern": "`meshopt ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+      "pattern": "`accesskit ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     },
     {
-      "crate": "stl_io",
+      "crate": "objc2",
       "doc": "README.md",
-      "pattern": "`stl_io ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+      "pattern": "`objc2 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "ashpd",
+      "doc": "README.md",
+      "pattern": "`ashpd ([0-9]+\\.[0-9]+\\.[0-9]+)`"
+    },
+    {
+      "crate": "oo7",
+      "doc": "README.md",
+      "pattern": "`oo7 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     },
     {
       "crate": "jiff",
       "doc": "README.md",
       "pattern": "`jiff ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "notify",
-      "doc": "README.md",
-      "pattern": "`notify ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "ignore",
-      "doc": "README.md",
-      "pattern": "`ignore ([0-9]+\\.[0-9]+\\.[0-9]+)`"
-    },
-    {
-      "crate": "sha2",
-      "doc": "README.md",
-      "pattern": "`sha2 ([0-9]+\\.[0-9]+\\.[0-9]+)`"
     }
   ],
   "constants": [
