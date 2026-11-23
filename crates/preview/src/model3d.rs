@@ -263,13 +263,6 @@ pub fn decode_model(
     })
 }
 
-#[cfg_attr(
-    not(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    )),
-    allow(dead_code)
-)]
 pub(crate) const MAX_MODEL_COORD: f64 = 1.0e12;
 
 fn valid_point(point: Point) -> Result<Point> {

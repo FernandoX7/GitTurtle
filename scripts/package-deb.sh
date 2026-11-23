@@ -84,9 +84,12 @@ print(version)
 print(arch_map[target])
 PY
 )"
-readarray -t meta <<< "$meta_out"
-version="${meta[0]}"
-deb_arch="${meta[1]}"
+version="${meta_out%%$'\n'*}"
+deb_arch="${meta_out#*$'\n'}"
+if [[ -z "$version" || -z "$deb_arch" || "$version" == "$meta_out" ]]; then
+  echo "Failed to parse version and architecture from build-info.json." >&2
+  exit 1
+fi
 
 if [[ -z "$output" ]]; then
   output="$(dirname "$bundle")/gitturtle_${version}_${deb_arch}.deb"
@@ -118,10 +121,11 @@ install -m644 "$bundle/README.md" "$pkg/usr/share/doc/gitturtle/README.md"
 install -m644 "$bundle/licenses/LICENSE" "$pkg/usr/share/doc/gitturtle/copyright"
 
 while IFS= read -r -d '' rel; do
+  rel="${rel#./}"
   dest="$pkg/usr/share/doc/gitturtle/licenses/$rel"
   mkdir -p "$(dirname "$dest")"
   install -m644 "$bundle/licenses/$rel" "$dest"
-done < <(cd "$bundle/licenses" && find . -type f -printf '%P\0')
+done < <(cd "$bundle/licenses" && find . -type f -print0)
 
 for size in 16 24 32 48 64 128 256 512; do
   icon_src="$bundle/icons/hicolor/${size}x${size}/apps/${app_id}.png"

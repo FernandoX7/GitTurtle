@@ -141,16 +141,11 @@ class PackageDebTests(unittest.TestCase):
         bundle = create_fixture_bundle(self.root / "nodpkg")
         empty_bin = self.root / "empty-bin"
         empty_bin.mkdir()
-        # Keep bash and core utilities, strip dpkg-deb from PATH.
-        filtered = [
-            entry for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
-            if not (Path(entry) / "dpkg-deb").exists()
-        ]
-        env = {**os.environ, "PATH": os.pathsep.join(filtered)}
-        if shutil.which("dpkg-deb", path=env["PATH"]):
-            self.skipTest("dpkg-deb remains reachable on filtered PATH")
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "bash must be available to run package-deb.sh")
+        env = {**os.environ, "PATH": str(empty_bin)}
         result = subprocess.run(
-            ["bash", str(SCRIPT), "--bundle", str(bundle)],
+            [bash, str(SCRIPT), "--bundle", str(bundle)],
             env=env,
             capture_output=True,
             text=True,
