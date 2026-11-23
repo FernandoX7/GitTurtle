@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod appearance;
-mod compression;
+pub(super) mod compression;
 mod deformation;
 use compression::{BufferExtensions, DecodedView, ViewExtensions};
 pub(super) use deformation::GlbAnimation;
@@ -168,6 +168,137 @@ struct SparseValues {
 }
 
 pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<Decoded> {
+    decode_internal(bytes, check, None)
+}
+
+pub(super) fn decode_with_meshopt(
+    bytes: &[u8],
+    check: &impl Fn() -> Result<()>,
+    batch_decoder: impl FnOnce(&[compression::MeshoptViewJob]) -> Result<HashMap<usize, Vec<u8>>>,
+) -> Result<Decoded> {
+    decode_internal(bytes, check, Some(Box::new(batch_decoder)))
+}
+
+type MeshoptBatchDecoder<'a> =
+    Box<dyn FnOnce(&[compression::MeshoptViewJob]) -> Result<HashMap<usize, Vec<u8>>> + 'a>;
+
+fn collect_reachable_meshopt_views(document: &Document, roots: &[usize]) -> Result<Vec<usize>> {
+    use std::collections::HashSet;
+    let mut visited_nodes = HashSet::new();
+    let mut stack: Vec<usize> = roots.to_vec();
+    let mut accessors = Vec::new();
+    let mut seen_accessors = HashSet::new();
+    let mut push_accessor = |idx: usize| {
+        if seen_accessors.insert(idx) {
+            accessors.push(idx);
+        }
+    };
+    while let Some(node_idx) = stack.pop() {
+        if !visited_nodes.insert(node_idx) {
+            continue;
+        }
+        if visited_nodes.len() > MAX_OBJECTS {
+            break;
+        }
+        let Some(node) = document.nodes.get(node_idx) else {
+            continue;
+        };
+        if let Some(mesh_idx) = node.mesh
+            && let Some(mesh) = document.meshes.get(mesh_idx)
+        {
+            for prim in &mesh.primitives {
+                if let Some(idx) = prim.indices {
+                    push_accessor(idx);
+                }
+                for (name, &idx) in &prim.attributes {
+                    if matches!(
+                        name.as_str(),
+                        "POSITION" | "JOINTS_0" | "WEIGHTS_0" | "COLOR_0"
+                    ) || name.starts_with("TEXCOORD_")
+                    {
+                        push_accessor(idx);
+                    }
+                }
+                for target in &prim.targets {
+                    if let Some(&idx) = target.get("POSITION") {
+                        push_accessor(idx);
+                    }
+                }
+            }
+        }
+        if let Some(skin_idx) = node.skin
+            && let Some(skin) = document.skins.get(skin_idx)
+            && let Some(idx) = skin.inverse_bind_matrices
+        {
+            push_accessor(idx);
+        }
+        for &child in &node.children {
+            stack.push(child);
+        }
+    }
+    // Animations targeting any reachable node may also reference compressed sampler accessors.
+    for animation in &document.animations {
+        let Some(channels) = animation.get("channels").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let Some(samplers) = animation.get("samplers").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for channel in channels {
+            let target_node = channel
+                .get("target")
+                .and_then(|t| t.get("node"))
+                .and_then(|n| n.as_u64())
+                .and_then(|n| usize::try_from(n).ok());
+            if target_node.is_some_and(|n| visited_nodes.contains(&n))
+                && let Some(sampler_idx) = channel
+                    .get("sampler")
+                    .and_then(|s| s.as_u64())
+                    .and_then(|s| usize::try_from(s).ok())
+                && let Some(sampler) = samplers.get(sampler_idx)
+            {
+                for key in ["input", "output"] {
+                    if let Some(idx) = sampler
+                        .get(key)
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| usize::try_from(v).ok())
+                    {
+                        push_accessor(idx);
+                    }
+                }
+            }
+        }
+    }
+    let mut seen_views = HashSet::new();
+    let mut views = Vec::new();
+    for acc_idx in accessors {
+        let Some(accessor) = document.accessors.get(acc_idx) else {
+            continue;
+        };
+        let sources = [
+            accessor.buffer_view,
+            accessor.sparse.as_ref().map(|v| v.indices.buffer_view),
+            accessor.sparse.as_ref().map(|v| v.values.buffer_view),
+        ];
+        for view_idx in sources.into_iter().flatten() {
+            if seen_views.insert(view_idx)
+                && document
+                    .buffer_views
+                    .get(view_idx)
+                    .is_some_and(|view| view.extensions.meshopt.is_some())
+            {
+                views.push(view_idx);
+            }
+        }
+    }
+    Ok(views)
+}
+
+fn decode_internal(
+    bytes: &[u8],
+    check: &impl Fn() -> Result<()>,
+    batch_decoder: Option<MeshoptBatchDecoder<'_>>,
+) -> Result<Decoded> {
     check()?;
     let (json, bin) = container(bytes, check)?;
     JsonPreflight::new(json, check).run()?;
@@ -185,6 +316,40 @@ pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<De
         .extensions_required
         .iter()
         .any(|v| v == QUANTIZATION);
+    let mut decoded_views = HashMap::new();
+    let mut compressed_bytes = 0usize;
+    let mut decompressed_bytes = 0usize;
+    let forbid_inline_meshopt = batch_decoder.is_some();
+    if let Some(decode_batch) = batch_decoder
+        && document
+            .extensions_used
+            .iter()
+            .any(|ext| ext == compression::EXTENSION)
+    {
+        let view_indices = collect_reachable_meshopt_views(&document, roots)?;
+        let (jobs, comp_total, decomp_total) =
+            compression::collect_jobs_for_views(&document, bin, &view_indices)?;
+        if !jobs.is_empty() {
+            check()?;
+            let mut decoded_map = decode_batch(&jobs)?;
+            for job in &jobs {
+                let raw = decoded_map
+                    .remove(&job.view_index)
+                    .context("Confined meshopt helper omitted a requested buffer view")?;
+                ensure!(
+                    raw.len() == job.output_len,
+                    "Confined meshopt helper returned unexpected view byte length"
+                );
+                decoded_views.insert(job.view_index, compression::DecodedView::from_bytes(&raw)?);
+            }
+            ensure!(
+                decoded_map.is_empty(),
+                "Confined meshopt helper returned unexpected extra buffer views"
+            );
+            compressed_bytes = comp_total;
+            decompressed_bytes = decomp_total;
+        }
+    }
     let mut decoder = Decoder {
         document: &document,
         bin,
@@ -198,9 +363,10 @@ pub(super) fn decode(bytes: &[u8], check: &impl Fn() -> Result<()>) -> Result<De
         deformation_components: 0,
         retained_deformation_bytes: 0,
         appearance: appearance::Builder::default(),
-        decoded_views: HashMap::new(),
-        compressed_bytes: 0,
-        decompressed_bytes: 0,
+        decoded_views,
+        compressed_bytes,
+        decompressed_bytes,
+        forbid_inline_meshopt,
     };
     let mut details = vec![format!(
         "GLB scene {scene} ({}) · meters converted to millimeters, right-handed Z-up",
@@ -1048,6 +1214,7 @@ struct Decoder<'a, F> {
     decoded_views: HashMap<usize, DecodedView>,
     compressed_bytes: usize,
     decompressed_bytes: usize,
+    forbid_inline_meshopt: bool,
 }
 impl<F: Fn() -> Result<()>> Decoder<'_, F> {
     fn data(&self, index: usize) -> Result<&[u8]> {

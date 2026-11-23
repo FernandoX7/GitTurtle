@@ -6211,13 +6211,12 @@ const HEADER_ROW: &[&str] = &[
     "settings",
 ];
 
-/// The window's minimum width (`main`'s `window_min_size`), where the
-/// full header's repository heading takes less than its most and more
-/// than its least at 13 and 18 pt with the width walk's identity, which
-/// [`crate::width_walk::open`] lands, so it gives up or takes whatever
-/// any control in its row gains or loses and the controls after it move,
-/// on every platform. In 1,480 px it takes its most at 13 pt, the spacer
-/// taking up a control that grows there.
+/// A squeezed full-header width where the full header's repository heading
+/// takes less than its most and more than its least at 13 and 18 pt with the
+/// width walk's identity, which [`crate::width_walk::open`] lands, so it gives
+/// up or takes whatever any control in its row gains or loses and the controls
+/// after it move, on every platform. In 1,480 px it takes its most at 13 pt,
+/// the spacer taking up a control that grows there.
 const SQUEEZED_HEADER_WIDTH: f32 = 1000.;
 
 /// More contrast recolors and moves nothing. On the fixture in History,

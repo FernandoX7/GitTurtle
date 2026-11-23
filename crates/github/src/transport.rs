@@ -378,6 +378,72 @@ impl CredentialStore for SecureStore {
         secret_service::remove(&secret_service::DesktopKeyring::new()?, control)
     }
 }
+impl SecureStore {
+    /// Saves authorization while parenting any Linux Secret Service prompt to
+    /// `window_id` (`x11:<hex>` or `wayland:<handle>`).
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub fn save_with_window_id(
+        &self,
+        credential: &Credential,
+        control: &OperationControl,
+        window_id: Option<String>,
+    ) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            secret_service::save(
+                &secret_service::DesktopKeyring::with_window_id(window_id)?,
+                credential,
+                control,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = window_id;
+            self.save(credential, control)
+        }
+    }
+
+    /// Removes stored authorization while parenting any Linux Secret Service
+    /// prompt to `window_id`.
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub fn remove_with_window_id(
+        &self,
+        control: &OperationControl,
+        window_id: Option<String>,
+    ) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            secret_service::remove(
+                &secret_service::DesktopKeyring::with_window_id(window_id)?,
+                control,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = window_id;
+            self.remove(control)
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn save_with_window_id(
+        &self,
+        credential: &Credential,
+        control: &OperationControl,
+        _window_id: Option<String>,
+    ) -> Result<()> {
+        self.save(credential, control)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn remove_with_window_id(
+        &self,
+        control: &OperationControl,
+        _window_id: Option<String>,
+    ) -> Result<()> {
+        self.remove(control)
+    }
+}
 #[cfg(all(
     not(any(target_os = "macos", target_os = "linux")),
     not(any(test, feature = "test-support"))
@@ -410,6 +476,13 @@ impl GhTransport {
     pub fn connect_existing(_control: &OperationControl) -> Result<String> {
         bail!("A test build has no GitHub account and reads no stored authorization.")
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn connect_existing_with_window_id(
+        _control: &OperationControl,
+        _window_id: Option<String>,
+    ) -> Result<String> {
+        bail!("A test build has no GitHub account and reads no stored authorization.")
+    }
     pub fn login(&self) -> &str {
         &self.credential.login
     }
@@ -419,6 +492,13 @@ impl GhTransport {
     /// A test build has none: it connects a stand-in (`github_view::account`).
     #[cfg(not(any(test, feature = "test-support")))]
     pub fn connect_existing(control: &OperationControl) -> Result<String> {
+        Self::connect_existing_with_window_id(control, None)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    pub fn connect_existing_with_window_id(
+        control: &OperationControl,
+        window_id: Option<String>,
+    ) -> Result<String> {
         let mut command = gh_command()?;
         command.args(["auth", "token", "--hostname", "github.com"]);
         let (success, token)=run(command,None,control,16*1024,Duration::from_secs(30)).map_err(|_|anyhow!("GitHub CLI has no usable signed-in account. In a terminal, run ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account. Never paste the token here."))?;
@@ -450,7 +530,7 @@ impl GhTransport {
             !control.is_cancelled(),
             "GitHub account connection cancelled before saving authorization"
         );
-        SecureStore.save(&client.0.credential, control)?;
+        SecureStore.save_with_window_id(&client.0.credential, control, window_id)?;
         ensure!(
             !control.is_cancelled(),
             "GitHub account connection cancelled; authorization may be stored in {}",
@@ -515,14 +595,120 @@ fn isolate_api_configuration(command: &mut Command) -> Result<tempfile::TempDir>
     Ok(directory)
 }
 /// Where GitTurtle runs GitHub CLI from, the first that exists winning: Homebrew's prefix only
-/// on a Mac, so elsewhere only the system package's executable runs, `/usr/local/bin` first.
-/// Linux once checked Homebrew's macOS prefix too.
+/// on a Mac; on Linux, `/usr/local/bin`, `/usr/bin`, NixOS `/run/current-system/sw/bin`, and
+/// finally the user's `$HOME/.local/bin/gh`.
 #[cfg(target_os = "macos")]
 const GH_CANDIDATES: &[&str] = &["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
 #[cfg(not(target_os = "macos"))]
-const GH_CANDIDATES: &[&str] = &["/usr/local/bin/gh", "/usr/bin/gh"];
+const GH_CANDIDATES: &[&str] = &[
+    "/usr/local/bin/gh",
+    "/usr/bin/gh",
+    "/run/current-system/sw/bin/gh",
+];
+
+fn gh_candidate_paths(home: Option<&std::ffi::OsStr>) -> Vec<(std::path::PathBuf, bool)> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = home;
+        GH_CANDIDATES
+            .iter()
+            .map(|path| (std::path::PathBuf::from(path), false))
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut paths: Vec<(std::path::PathBuf, bool)> = GH_CANDIDATES
+            .iter()
+            .map(|path| (std::path::PathBuf::from(path), false))
+            .collect();
+        if let Some(home) = home.filter(|value| !value.is_empty()) {
+            let home = std::path::Path::new(home);
+            if home.is_absolute() {
+                paths.push((home.join(".local/bin/gh"), true));
+            }
+        }
+        paths
+    }
+}
+
+#[cfg(unix)]
+fn is_trusted_owner_and_mode(meta: &std::fs::Metadata, euid: u32) -> bool {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let uid = meta.uid();
+    (uid == euid || uid == 0) && (meta.permissions().mode() & 0o022) == 0
+}
+
+#[cfg(unix)]
+fn is_trusted_gh_executable(path: &std::path::Path, is_user_local: bool) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || (meta.permissions().mode() & 0o111) == 0 {
+        return false;
+    }
+    if !is_user_local {
+        return true;
+    }
+    let euid = rustix::process::geteuid().as_raw();
+    if !is_trusted_owner_and_mode(&meta, euid) {
+        return false;
+    }
+    let Ok(link_meta) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let link_uid = link_meta.uid();
+        if link_uid != euid && link_uid != 0 {
+            return false;
+        }
+    }
+    // Verify `$HOME/.local/bin`, `$HOME/.local`, and `$HOME` are not group/world-writable.
+    let mut ancestor = path.parent();
+    for _ in 0..3 {
+        let Some(dir) = ancestor else {
+            return false;
+        };
+        let Ok(dir_meta) = std::fs::metadata(dir) else {
+            return false;
+        };
+        if !dir_meta.is_dir() || !is_trusted_owner_and_mode(&dir_meta, euid) {
+            return false;
+        }
+        ancestor = dir.parent();
+    }
+    if link_meta.file_type().is_symlink() {
+        let Ok(resolved) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        let Some(target_dir) = resolved.parent() else {
+            return false;
+        };
+        let Ok(target_dir_meta) = std::fs::metadata(target_dir) else {
+            return false;
+        };
+        if !target_dir_meta.is_dir() || !is_trusted_owner_and_mode(&target_dir_meta, euid) {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(not(unix))]
+fn is_trusted_gh_executable(path: &std::path::Path, _is_user_local: bool) -> bool {
+    path.is_file()
+}
+
 fn gh_command() -> Result<Command> {
-    let executable=GH_CANDIDATES.iter().map(std::path::Path::new).find(|path|path.is_file()).ok_or_else(||anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account."))?;
+    let home = std::env::var_os("HOME");
+    let executable = gh_candidate_paths(home.as_deref())
+        .into_iter()
+        .find(|(path, is_user_local)| is_trusted_gh_executable(path, *is_user_local))
+        .map(|(path, _)| path)
+        .ok_or_else(|| {
+            anyhow!("Install GitHub CLI from cli.github.com, sign in with its browser flow, then connect the account.")
+        })?;
     let mut command = Command::new(executable);
     gitturtle_core::apply_platform_path(&mut command);
     command
@@ -919,12 +1105,70 @@ mod tests {
         assert_eq!(response.headers["retry-after"], "30");
         assert_eq!(response.body, b"{}");
     }
-    /// A Linux build runs GitHub CLI only from the system package's paths, `/usr/local/bin`
-    /// before `/usr/bin`, never from Homebrew's macOS prefix, which it once checked first.
+    /// A Linux build runs GitHub CLI only from fixed system paths (including NixOS's
+    /// `/run/current-system/sw/bin`) and `$HOME/.local/bin/gh`, never Homebrew's macOS prefix.
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_runs_github_cli_only_from_the_system_paths() {
-        assert_eq!(GH_CANDIDATES, ["/usr/local/bin/gh", "/usr/bin/gh"]);
+        assert_eq!(
+            GH_CANDIDATES,
+            [
+                "/usr/local/bin/gh",
+                "/usr/bin/gh",
+                "/run/current-system/sw/bin/gh",
+            ]
+        );
+        let paths = gh_candidate_paths(Some(std::ffi::OsStr::new("/home/alice")));
+        assert_eq!(
+            paths,
+            vec![
+                (std::path::PathBuf::from("/usr/local/bin/gh"), false),
+                (std::path::PathBuf::from("/usr/bin/gh"), false),
+                (
+                    std::path::PathBuf::from("/run/current-system/sw/bin/gh"),
+                    false
+                ),
+                (std::path::PathBuf::from("/home/alice/.local/bin/gh"), true),
+            ]
+        );
+        // Relative HOME is ignored.
+        assert_eq!(
+            gh_candidate_paths(Some(std::ffi::OsStr::new("relative"))).len(),
+            3
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_local_gh_trust_checks_mode_and_ancestors() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let local = home.join(".local");
+        let bin = local.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for dir in [&home, &local, &bin] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let gh = bin.join("gh");
+        std::fs::write(&gh, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_trusted_gh_executable(&gh, true));
+
+        // Non-executable rejected.
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_trusted_gh_executable(&gh, true));
+        assert!(!is_trusted_gh_executable(&gh, false));
+
+        // Group/world-writable binary rejected.
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(!is_trusted_gh_executable(&gh, true));
+
+        // Writable parent directory rejected.
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!is_trusted_gh_executable(&gh, true));
     }
     #[test]
     fn token_debug_never_displays_secret() {

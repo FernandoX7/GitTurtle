@@ -51,18 +51,17 @@ if ! python3 -c 'from PIL import Image' 2>/dev/null; then
   echo "Install python3-pil (Ubuntu: sudo apt-get install python3-pil)." >&2
   exit 1
 fi
-# A SYSTEM_DEPS_ variable can make dav1d-sys git-clone dav1d and link that copy
-# statically. GitTurtle links only the distribution's libdav1d.
+# A SYSTEM_DEPS_ variable must stay unset so no crate accidentally pulls or
+# statically links an unreviewed native C library.
 if system_deps="$(compgen -e | grep '^SYSTEM_DEPS_')"; then
-  echo "Unset these variables before packaging; GitTurtle links the system libdav1d: $(tr '\n' ' ' <<<"$system_deps")" >&2
+  echo "Unset these variables before packaging: $(tr '\n' ' ' <<<"$system_deps")" >&2
   exit 1
 fi
 if [[ "$build" == true ]]; then
-  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan dav1d; then
+  if ! command -v pkg-config >/dev/null || ! pkg-config --exists fontconfig wayland-client xkbcommon-x11 x11-xcb openssl libzstd vulkan; then
     echo "Native development libraries are missing. Install all build dependencies in docs/linux.md; do not create local library symlinks." >&2
     exit 1
   fi
-  echo "Building against libdav1d $(pkg-config --modversion dav1d) in $(pkg-config --variable=libdir dav1d)"
   # Force the packaged target, even if the user's Cargo configuration selects
   # another target. Never build one path and silently ship an older executable.
   (cd "$project_root" && cargo build --release --locked -p gitturtle --target "$target" --target-dir "$project_root/target")
@@ -104,18 +103,18 @@ python3 "$project_root/scripts/package-identity.py" \
 # identity verified: every ELF file staged so far (the steps below add only
 # text and images) is a dynamically linked executable, one with a PT_INTERP
 # program header; the package ships no other ELF, such as a shared library or
-# a static executable. Each executable links the distribution's libdav1d: it
-# needs libdav1d.so.7, keeps its .symtab, imports dav1d_* symbols and defines
-# none (a static copy from dav1d-sys's internal build would), and carries no
-# RPATH or RUNPATH that could load another copy. A miss names the file and the
-# check.
+# a static executable. `libdav1d.so.7` is loaded dynamically via `dlopen`
+# inside the confined helper rather than hard-linked onto the binary: the
+# executable must NOT list NEEDED libdav1d*, must keep its .symtab, must import
+# and define zero dav1d_* symbols (preventing both hard startup coupling and
+# static copies), and must carry no RPATH or RUNPATH.
 check_dav1d_link() {
   local file="$1" name="${1#"$staged_bundle"/}" dynamic sections symbols imported defined
   if ! dynamic="$(LC_ALL=C readelf -d -W "$file" 2>&1)"; then
     echo "Packaged executable $name: readelf could not read its dynamic section." >&2; return 1
   fi
-  if ! grep -Eq '\(NEEDED\)[[:space:]]+Shared library: \[libdav1d\.so\.7\]' <<<"$dynamic"; then
-    echo "Packaged executable $name does not list NEEDED libdav1d.so.7." >&2; return 1
+  if grep -Eq '\(NEEDED\)[[:space:]]+Shared library: \[libdav1d' <<<"$dynamic"; then
+    echo "Packaged executable $name lists a hard NEEDED libdav1d entry; libdav1d must be loaded via dlopen in the confined helper." >&2; return 1
   fi
   if grep -Eq '\((RPATH|RUNPATH)\)' <<<"$dynamic"; then
     echo "Packaged executable $name sets DT_RPATH or DT_RUNPATH." >&2; return 1
@@ -123,11 +122,7 @@ check_dav1d_link() {
   # "Defines none" holds only while the symbol table exists: a fully stripped
   # executable keeps just .dynsym, where a static copy's functions need not
   # appear, so it would pass vacuously. The release profile's
-  # strip = "debuginfo" keeps .symtab. No fixed list of imports is required:
-  # the dav1d_* functions imported are the dav1d crate's internal call set,
-  # which a crate update changes, so such a list would refuse a correct
-  # package. NEEDED libdav1d.so.7, at least one import and no definition in a
-  # present .symtab already prove dynamic linking.
+  # strip = "debuginfo" keeps .symtab.
   if ! sections="$(LC_ALL=C readelf -S -W "$file" 2>&1)"; then
     echo "Packaged executable $name: readelf could not read its section headers." >&2; return 1
   fi
@@ -135,12 +130,6 @@ check_dav1d_link() {
     echo "Packaged executable $name has no .symtab section, so a static copy of dav1d would go unseen. Package an executable that keeps its symbol table, as the release profile's strip = \"debuginfo\" does." >&2
     return 1
   fi
-  # One line per dav1d_* symbol of code or data: its table, whether it is
-  # defined, its name. FILE and SECTION symbols (Type, the fourth column) name
-  # a source or codegen unit, such as dav1d_sys.<hash>-cgu.0, or a section,
-  # never a definition, so they are skipped. Ndx follows the visibility and any
-  # bracketed annotation such as [VARIANT_PCS]; a version suffix is dropped
-  # from the name.
   if ! symbols="$(LC_ALL=C readelf -s -W "$file" | awk '
     /^Symbol table / { table = $3; gsub(/\047/, "", table); next }
     $1 ~ /^[0-9]+:$/ {
@@ -153,14 +142,14 @@ check_dav1d_link() {
     echo "Packaged executable $name: readelf could not read its symbol tables." >&2; return 1
   fi
   imported="$(grep -c '^\.dynsym undefined ' <<<"$symbols" || true)"
-  if [[ "$imported" -eq 0 ]]; then
-    echo "Packaged executable $name imports no dav1d_* symbol in .dynsym." >&2; return 1
+  if [[ "$imported" -ne 0 ]]; then
+    echo "Packaged executable $name imports $imported dav1d_* symbol(s) in .dynsym; libdav1d must be loaded via dlopen." >&2; return 1
   fi
   if defined="$(grep ' defined ' <<<"$symbols")"; then
     echo "Packaged executable $name defines dav1d_* symbols, a static copy of dav1d: $(tr '\n' ' ' <<<"$defined")" >&2
     return 1
   fi
-  echo "Checked $name: NEEDED libdav1d.so.7, .symtab present, $imported dav1d_* symbols imported and none defined, no RPATH or RUNPATH"
+  echo "Checked $name: no NEEDED libdav1d, .symtab present, 0 dav1d_* symbols imported and none defined, no RPATH or RUNPATH"
 }
 elf_count=0
 while IFS= read -r -d '' file; do

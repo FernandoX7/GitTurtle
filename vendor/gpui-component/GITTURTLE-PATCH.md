@@ -21,6 +21,7 @@ When rebasing the 0.6.0 patch set onto `gpui-component` 0.10.0:
   - `src/menu/popup_menu.rs`: adapted submenu `open_left` to flip only when the opposite side fits or has strictly more room, and split `CONFIRM_KEYS_MAC` / `CONFIRM_KEYS_OTHER` for `gpui-pre 0.3.12`'s `Keystroke::parse` `'static` bound.
   - `src/theme/mono_font.rs`: preserves the platform default monospace font when `installed_font_names(cx).is_empty()` (such as under GPUI's `TestTextSystem`).
   - `src/color_picker.rs`: preserved 0.10.0's `ColorSelect` / `field` styling while rebasing `SwatchGrid`, `ClosingWatch`, held-Enter filtering, and accessible channel/swatch naming.
+  - `src/input/input.rs` & `src/input/content_type.rs`: derive `effective_content_type` for masked inputs (`InputContentType::Password`) and forward it to `gpui_base::input::set_text_content_type` on Linux as well as macOS so Wayland IMEs receive `ContentPurpose::Password` / `ContentHint::SensitiveData`.
 
 The historical section-by-section rationale from the 0.6.0 series follows below for reference.
 

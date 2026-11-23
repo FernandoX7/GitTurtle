@@ -3640,14 +3640,28 @@ fn paint_text_selection(state: &Entity<WindowSelectionState>, window: &mut Windo
     });
 
     let mouse_up_state = state.downgrade();
-    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
         if phase.bubble()
             && let Some(state) = mouse_up_state.upgrade()
         {
+            #[cfg(target_os = "linux")]
+            let primary = if event.button == MouseButton::Left && state.read(cx).is_selecting {
+                let items = state.read(cx).copy_items(cx);
+                let text = resolve_copy_items(items, cx);
+                (!text.is_empty()).then_some(text)
+            } else {
+                None
+            };
             state.update(cx, |state, cx| {
                 state.mouse_down_prepared = false;
                 state.end(cx)
             });
+            #[cfg(target_os = "linux")]
+            if let Some(text) = primary {
+                cx.write_to_primary(gpui::ClipboardItem::new_string(text));
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = event;
         }
     });
 

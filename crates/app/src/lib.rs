@@ -65,6 +65,18 @@ mod layout_grid;
 mod lfs_download;
 mod local_refresh;
 mod markdown_view;
+// Confined 3D mesh decoders (`ufbx` and GLB `meshopt`) on Linux x86-64/AArch64.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[doc(hidden)]
+pub mod mesh_helper;
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+mod mesh_helper;
 mod model_view;
 mod motion;
 mod native_accessibility;
@@ -102,6 +114,8 @@ mod rich_preview;
 mod scroll_tests;
 mod settings;
 mod shortcuts;
+#[cfg(target_os = "linux")]
+mod single_instance;
 mod split_diff;
 mod structured_view;
 mod system_preview;
@@ -1229,7 +1243,11 @@ impl GitTurtle {
         ));
         this.subscriptions
             .push(cx.observe_window_appearance(window, |this, window, cx| {
-                if this.settings.follow_system {
+                #[cfg(target_os = "linux")]
+                let accent_changed = appearance::sync_macos_system_accent(cx);
+                #[cfg(not(target_os = "linux"))]
+                let accent_changed = false;
+                if this.settings.follow_system || (accent_changed && this.settings.system_accent) {
                     this.apply_appearance(window, cx);
                 }
             }));
@@ -1331,7 +1349,12 @@ impl GitTurtle {
                     native_accessibility::sync_preferences(cx);
                     desktop_text::refresh(cx);
                     #[cfg(target_os = "linux")]
-                    appearance::omarchy::refresh(cx);
+                    {
+                        appearance::omarchy::refresh(cx);
+                        if appearance::sync_macos_system_accent(cx) && this.settings.system_accent {
+                            this.apply_appearance(window, cx);
+                        }
+                    }
                     this.show_display_preferences(None, window, cx);
                 }
                 if window.is_window_active() && this.repository.is_some() {
@@ -4981,10 +5004,10 @@ fn resolve_window_options(
                 .as_ref()
                 .map(|d| d.visible_bounds())
                 .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.))));
-            let max_w = f32::from(visible.size.width).max(1000.);
-            let max_h = f32::from(visible.size.height).max(680.);
-            let width = saved.width.clamp(1000., max_w);
-            let height = saved.height.clamp(680., max_h);
+            let max_w = f32::from(visible.size.width).max(460.);
+            let max_h = f32::from(visible.size.height).max(480.);
+            let width = saved.width.clamp(460., max_w);
+            let height = saved.height.clamp(480., max_h);
             let min_x = f32::from(visible.origin.x);
             let min_y = f32::from(visible.origin.y);
             let max_x = (min_x + f32::from(visible.size.width) - width).max(min_x);
@@ -5028,7 +5051,7 @@ fn resolve_window_options(
         titlebar,
         app_owns_titlebar_drag: cfg!(target_os = "macos"),
         display_id,
-        window_min_size: Some(size(px(1000.), px(680.))),
+        window_min_size: Some(size(px(460.), px(480.))),
         tabbing_identifier: cfg!(target_os = "macos").then(|| "com.gitturtle.GitTurtle".into()),
         app_id: Some("com.gitturtle.GitTurtle".into()),
         ..Default::default()
@@ -5194,6 +5217,10 @@ pub fn run() {
         );
         std::process::exit(1);
     }
+    #[cfg(target_os = "linux")]
+    if single_instance::try_hand_off_cli_launch() == single_instance::HandOff::HandedOff {
+        return;
+    }
     let preferences = Preferences::load_at_launch();
     let system_code_font = preferences.settings.system_code_font;
     let activity = activity::State::load();
@@ -5227,7 +5254,15 @@ pub fn run() {
     application.run(move |cx| {
         desktop_text::register_bundled_fonts(cx);
         gpui_kit::init(cx);
-        // The person's Reduce motion, Increase contrast, and macOS system accent,
+        #[cfg(target_os = "linux")]
+        gpui_kit::base::input::set_text_content_type_hook(|_, content_type| {
+            let sensitive = matches!(
+                content_type,
+                Some("password" | "new-password" | "one-time-code")
+            );
+            gpui_linux::set_wayland_ime_password(sensitive);
+        });
+        // The person's Reduce motion, Increase contrast, and desktop accent,
         // before the first resolution, so the first frame already has them.
         native_accessibility::set_display_choices(&preferences.settings, cx);
         native_accessibility::sync_preferences(cx);
@@ -5249,6 +5284,7 @@ pub fn run() {
             .effective_theme(cx, &preferences.custom_themes)
             .apply(None, cx);
         let applied_contrast = appearance::more_contrast(cx);
+        let applied_appearance = cx.window_appearance();
         shortcuts::bind_keys(cx);
         cx.on_action(|_: &Quit, cx| quit_if_idle(cx));
         cx.on_action(|_: &HideApplication, cx| cx.hide());
@@ -5387,17 +5423,50 @@ pub fn run() {
         })
         .detach();
         cx.activate(true);
+        #[cfg(target_os = "linux")]
+        let ipc_channel = {
+            let (ipc_tx, ipc_rx) =
+                futures::channel::mpsc::channel::<single_instance::Activation>(16);
+            single_instance::listen(ipc_tx).map(|guard| {
+                let guard = std::sync::Arc::new(std::sync::Mutex::new(Some(guard)));
+                let quit_guard = std::sync::Arc::clone(&guard);
+                cx.on_app_quit(move |_| {
+                    if let Ok(mut slot) = quit_guard.lock()
+                        && let Some(mut listener) = slot.take()
+                    {
+                        listener.shutdown();
+                    }
+                    async {}
+                })
+                .detach();
+                (guard, ipc_rx)
+            })
+        };
         cx.spawn(async move |cx| {
-            desktop_text::ready(desktop_text, cx).await;
-            // The window's first frame shows a selected Omarchy theme when its
-            // read finishes in time (`GitTurtle::new` applies it).
             #[cfg(target_os = "linux")]
-            appearance::omarchy::ready(omarchy, cx).await;
-            // The desktop's first answer, when it arrived during that wait and
-            // changed More contrast, before any window could apply it: the
-            // theme applies again, so the first frame has it.
+            {
+                // Run initial desktop text, Omarchy palette, and portal appearance
+                // waits concurrently within a shared 250 ms budget so dark desktops
+                // never flash Light on Frame 1 without stacking latency.
+                let portal_wait = gpui_linux::wait_initial_portal_appearance(
+                    std::time::Duration::from_millis(250),
+                );
+                let _ = futures::join!(
+                    desktop_text::ready(desktop_text, cx),
+                    appearance::omarchy::ready(omarchy, cx),
+                    portal_wait,
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
+            desktop_text::ready(desktop_text, cx).await;
+            // Re-apply theme if More contrast, Linux desktop color-scheme, or
+            // portal accent arrived during the bounded startup wait.
             let opened = cx.update(|cx| {
-                if appearance::more_contrast(cx) != applied_contrast {
+                let accent_changed = appearance::sync_macos_system_accent(cx);
+                if appearance::more_contrast(cx) != applied_contrast
+                    || cx.window_appearance() != applied_appearance
+                    || (accent_changed && preferences.settings.system_accent)
+                {
                     preferences
                         .settings
                         .effective_theme(cx, &preferences.custom_themes)
@@ -5419,12 +5488,55 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if let Err(error) = opened {
                 eprintln!(
-                    "Could not open the GitTurtle window: {error:#}\nCheck that this process can access your Wayland or X11 session and that a working Vulkan driver is installed. See docs/linux.md for startup troubleshooting."
+                    "Could not open the GitTurtle window: {error:#}\nCheck that this process can access your Wayland or X11 session and that a working Vulkan or OpenGL driver (Mesa / vulkan-icd-loader) is installed. On virtual machines or older GPUs without Vulkan, try launching with WGPU_BACKEND=gl. See docs/linux.md for startup troubleshooting."
                 );
                 std::process::exit(1);
             }
             #[cfg(not(target_os = "linux"))]
             opened.expect("open GitTurtle window");
+
+            #[cfg(target_os = "linux")]
+            if let Some((guard, mut ipc_rx)) = ipc_channel {
+                cx.spawn(async move |cx| {
+                    use futures::StreamExt as _;
+                    let _keep_alive = guard;
+                    while let Some(activation) = ipc_rx.next().await {
+                        let dirs = resolve_external_open_dirs(&activation.paths);
+                        let token = activation.activation_token;
+                        cx.update(|cx| {
+                            if let Some(token) = token {
+                                let _ = gpui_linux::activate_wayland_window_with_token(token);
+                            }
+                            if let Some((handle, entity)) = frontmost_app_window(cx) {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    window.activate_window();
+                                    if !dirs.is_empty()
+                                        && !window.has_active_dialog(cx)
+                                        && !window.has_active_sheet(cx)
+                                    {
+                                        entity.update(cx, |this, cx| {
+                                            this.open_external_paths(&dirs, window, cx);
+                                        });
+                                    }
+                                });
+                                cx.activate(true);
+                            } else {
+                                let post_open: Option<PostOpenHook> = (!dirs.is_empty()).then(|| {
+                                    Box::new(
+                                        move |this: &mut GitTurtle,
+                                              window: &mut Window,
+                                              cx: &mut Context<GitTurtle>| {
+                                            this.open_external_paths(&dirs, window, cx);
+                                        },
+                                    ) as PostOpenHook
+                                });
+                                open_fresh_app_window(None, false, post_open, cx);
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
 
             // Drain any Finder "Open With", Dock drop, or `gitturtle://open`
             // URLs queued during cold launch or arriving while the app runs.

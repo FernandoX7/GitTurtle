@@ -1,6 +1,6 @@
 # GitTurtle patch to gpui-pre-linux 0.3.12
 
-This directory contains the exact crates.io `gpui-pre-linux` 0.3.12 source under Apache-2.0, the version the matching GPUI Kit 0.10.0 stack locks. `LICENSE-APACHE` is byte-for-byte preserved. The registry archive (`gpui-pre-linux-0.3.12.crate`) has SHA-256 `54bab418d0b7c027af9495f278619b46887362b3bd6446e246c87c5b0fa167df`; the package metadata names Zed's `crates/gpui_linux` at `d2a4fb6ded7c470be25d1541281da3882495b65b` (`https://github.com/zed-industries/zed`). `Cargo.toml` is the published normalized manifest and `Cargo.toml.orig` the original one; dependency requirements are unchanged and the workspace lockfile pins their versions. The registry-only `.cargo-ok` and the package lockfile are omitted. Apart from this note, `src/linux/wayland/window.rs` is the only file that differs from the archive.
+This directory contains the exact crates.io `gpui-pre-linux` 0.3.12 source under Apache-2.0, the version the matching GPUI Kit 0.10.0 stack locks. `LICENSE-APACHE` is byte-for-byte preserved. The registry archive (`gpui-pre-linux-0.3.12.crate`) has SHA-256 `54bab418d0b7c027af9495f278619b46887362b3bd6446e246c87c5b0fa167df`; the package metadata names Zed's `crates/gpui_linux` at `d2a4fb6ded7c470be25d1541281da3882495b65b` (`https://github.com/zed-industries/zed`). `Cargo.toml` is the published normalized manifest and `Cargo.toml.orig` the original one; dependency requirements are unchanged and the workspace lockfile pins their versions. The registry-only `.cargo-ok` and the package lockfile are omitted. Apart from this note, `src/gpui_linux.rs`, `src/linux.rs`, `src/linux/platform.rs`, `src/linux/xdg_desktop_portal.rs`, `src/linux/wayland/clipboard.rs`, `src/linux/wayland/client.rs`, `src/linux/wayland/window.rs`, and `src/linux/x11/client.rs` differ from the archive.
 
 Cargo stops checking the archive checksum once the crate comes from a path, so compare the tree with the archive it came from when reviewing a change here:
 
@@ -32,6 +32,14 @@ Tests: `linux::wayland::window::content_size_tests::the_root_reaches_the_drawabl
 
 Keep this change across an upgrade until upstream's Wayland `content_size` reports the drawable's size over the scale, as `content_size_tests` shows.
 
+## Linux desktop integration, IME, clipboard, and fallback patches
+
+- **`src/linux/wayland/clipboard.rs`:** Clear `cached_read` in `set()` and `cached_primary_read` in `set_primary()` so self-writes never return stale cached clipboard/PRIMARY reads.
+- **`src/linux/wayland/client.rs` & `window.rs`:** Track `ime_password` (preserved across compositor `Leave`/`Enter` and composing resets; cleared when text input leaves) and expose `set_wayland_ime_password(bool)` so masked/password fields send `ContentHint::SensitiveData` + `ContentPurpose::Password` over `zwp_text_input_v3`; expose `active_window_identifier()` so Secret Service prompts attach to the triggering window, and `activate_wayland_window_with_token(String)` so single-instance handoffs forward `XDG_ACTIVATION_TOKEN` via `xdg_activation_v1`.
+- **`src/linux/xdg_desktop_portal.rs`:** Fetch initial `color_scheme` and `accent_color` concurrently before emitting `Event::WindowAppearance`, expose bounded `wait_initial_portal_appearance(timeout)` so startup does not flash Light on dark desktops, emit `Event::AccentColor` for live desktop accent updates (clearing cached accent on out-of-range "no preference"), and add non-portal dark-mode fallback (`GTK_THEME`, `gtk-4.0`/`gtk-3.0/settings.ini`, `kdeglobals`), KDE `kwinrc` button layout fallback (preserving KDE defaults for omitted sides), and `portal_accent_color()`.
+- **`src/linux/x11/client.rs`:** Fall back to KDE `$XDG_CONFIG_HOME/kcmfonts` `forceFontDPI` when `Xft.dpi` is unset, handle `XDPEvent::AccentColor`, and expose `active_x11_window_identifier()`.
+- **`src/linux/platform.rs`:** Fall back gracefully from Wayland to X11 with a warning when Wayland attachment fails (e.g., stale `WAYLAND_DISPLAY`) and `DISPLAY` is set with `WindowingModes::X11` allowed.
+
 ## Removing the patch
 
-Remove this patch, the `[patch.crates-io]` entry, the workspace exclusion, the `THIRD_PARTY_NOTICES.md` row and the `vendor/AGENTS.md` row once upstream's Wayland backend reports `content_size` as the drawable size divided by the scale.
+Remove these patches, the `[patch.crates-io]` entry, the workspace exclusion, the `THIRD_PARTY_NOTICES.md` row and the `vendor/AGENTS.md` row once upstream `gpui-pre-linux` includes equivalent behavior.

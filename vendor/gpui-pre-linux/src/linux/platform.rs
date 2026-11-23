@@ -377,7 +377,7 @@ impl LinuxPlatform {
         match backend {
             Some((backend, environment)) => {
                 let connection = self
-                    .connect(backend, environment, startup)
+                    .connect_with_fallback(backend, environment, startup)
                     .unwrap_or_else(|error| panic!("{error:#}"));
                 self.replace_connection(connection);
             }
@@ -386,6 +386,33 @@ impl LinuxPlatform {
                 "{:?} does not allow starting headless, and no allowed display server was given",
                 self.allowed_modes
             ),
+        }
+    }
+
+    /// Connects to `backend`, falling back from Wayland to X11 when the Wayland display cannot be
+    /// reached (for example a stale `WAYLAND_DISPLAY`) and X11 is both allowed and present.
+    fn connect_with_fallback(
+        &self,
+        backend: Backend,
+        environment: &GraphicalEnvironment,
+        startup: StartupEnvironment,
+    ) -> anyhow::Result<DisplayConnection> {
+        match self.connect(backend, environment, startup) {
+            Ok(connection) => Ok(connection),
+            Err(error) => {
+                #[cfg(all(feature = "wayland", feature = "x11"))]
+                if matches!(backend, Backend::Wayland)
+                    && self.allowed_modes.contains(WindowingModes::X11)
+                    && environment
+                        .x11_display
+                        .as_ref()
+                        .is_some_and(|display| !display.is_empty())
+                {
+                    log::warn!("Wayland connection failed ({error:#}); falling back to X11");
+                    return self.connect(Backend::X11, environment, StartupEnvironment::default());
+                }
+                Err(error)
+            }
         }
     }
 
@@ -491,7 +518,11 @@ impl LinuxPlatform {
                     select_backend(self.allowed_modes, &environment)
                         .context("the environment names no allowed Wayland or X11 display server")
                         .and_then(|backend| {
-                            self.connect(backend, &environment, StartupEnvironment::default())
+                            self.connect_with_fallback(
+                                backend,
+                                &environment,
+                                StartupEnvironment::default(),
+                            )
                         })
                         .map(|connection| self.replace_connection(connection))
                 }

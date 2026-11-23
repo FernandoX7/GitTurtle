@@ -1243,11 +1243,55 @@ pub const MAX_NAME_FILE_BYTES: usize = 1024;
 /// The longest theme name the card shows.
 pub const MAX_NAME_BYTES: usize = 64;
 
-/// `~/.local/state/omarchy/current`, where Omarchy keeps the applied theme.
+/// The active Omarchy theme directory: `$XDG_STATE_HOME/omarchy/current`
+/// (defaulting to `~/.local/state/omarchy/current`), falling back to Omarchy
+/// 3.x `$XDG_CONFIG_HOME/omarchy/current` (defaulting to
+/// `~/.config/omarchy/current`) when the state directory does not hold an
+/// active theme.
 pub fn default_root() -> Option<std::path::PathBuf> {
-    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
-    home.is_absolute()
-        .then(|| home.join(".local/state/omarchy/current"))
+    resolve_root_from(
+        std::env::var_os("XDG_STATE_HOME").as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// Pure resolver for [`default_root`] given optional XDG and `HOME` values.
+pub fn resolve_root_from(
+    xdg_state: Option<&std::ffi::OsStr>,
+    xdg_config: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let absolute = |value: Option<&std::ffi::OsStr>| {
+        value
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let home = absolute(home);
+    let state_root = absolute(xdg_state)
+        .map(|base| base.join("omarchy/current"))
+        .or_else(|| {
+            home.as_ref()
+                .map(|home| home.join(".local/state/omarchy/current"))
+        });
+    let config_root = absolute(xdg_config)
+        .map(|base| base.join("omarchy/current"))
+        .or_else(|| {
+            home.as_ref()
+                .map(|home| home.join(".config/omarchy/current"))
+        });
+
+    if let Some(state) = &state_root
+        && runs_omarchy(state)
+    {
+        return Some(state.clone());
+    }
+    if let Some(config) = &config_root
+        && runs_omarchy(config)
+    {
+        return Some(config.clone());
+    }
+    state_root.or(config_root)
 }
 
 /// Whether this desktop runs Omarchy: its current theme's `colors.toml` is a regular file,
@@ -2553,5 +2597,75 @@ mod tests {
             let mapped = map(&colors);
             (format!("Omarchy {name}"), mapped.palette, mapped.is_light)
         }));
+    }
+
+    #[test]
+    fn resolve_root_honors_xdg_state_and_falls_back_to_omarchy_3_config() {
+        use std::ffi::OsStr;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "gitturtle-omarchy-root-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("home");
+        let xdg_state = dir.join("state");
+        let xdg_config = dir.join("config");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // Without any colors.toml yet, XDG_STATE_HOME takes precedence over HOME.
+        assert_eq!(
+            resolve_root_from(
+                Some(xdg_state.as_os_str()),
+                Some(xdg_config.as_os_str()),
+                Some(home.as_os_str()),
+            ),
+            Some(xdg_state.join("omarchy/current"))
+        );
+
+        // Relative XDG variables are ignored per the XDG Base Directory spec.
+        assert_eq!(
+            resolve_root_from(
+                Some(OsStr::new("relative/state")),
+                Some(OsStr::new("relative/config")),
+                Some(home.as_os_str()),
+            ),
+            Some(home.join(".local/state/omarchy/current"))
+        );
+
+        // When only Omarchy 3.x config holds colors.toml, fall back to it.
+        let config_theme = xdg_config.join("omarchy/current/theme");
+        std::fs::create_dir_all(&config_theme).unwrap();
+        std::fs::write(
+            config_theme.join(COLORS_FILE),
+            b"background = \"#111111\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_root_from(
+                Some(xdg_state.as_os_str()),
+                Some(xdg_config.as_os_str()),
+                Some(home.as_os_str()),
+            ),
+            Some(xdg_config.join("omarchy/current"))
+        );
+
+        // Once XDG state holds colors.toml, it takes priority over legacy config.
+        let state_theme = xdg_state.join("omarchy/current/theme");
+        std::fs::create_dir_all(&state_theme).unwrap();
+        std::fs::write(state_theme.join(COLORS_FILE), b"background = \"#111111\"\n").unwrap();
+        assert_eq!(
+            resolve_root_from(
+                Some(xdg_state.as_os_str()),
+                Some(xdg_config.as_os_str()),
+                Some(home.as_os_str()),
+            ),
+            Some(xdg_state.join("omarchy/current"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -107,6 +107,32 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::set_text_content_type;
 
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::sync::OnceLock;
+
+    use gpui::Window;
+
+    type ContentTypeHook = fn(&Window, Option<&str>);
+
+    static CONTENT_TYPE_HOOK: OnceLock<ContentTypeHook> = OnceLock::new();
+
+    /// Registers a platform callback notified whenever a focused editable input
+    /// reports its semantic content type (such as `"password"` or `None`).
+    pub fn set_text_content_type_hook(hook: ContentTypeHook) {
+        let _ = CONTENT_TYPE_HOOK.set(hook);
+    }
+
+    pub fn set_text_content_type(window: &Window, content_type: Option<&str>) {
+        if let Some(hook) = CONTENT_TYPE_HOOK.get() {
+            hook(window, content_type);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux::{set_text_content_type, set_text_content_type_hook};
+
 use gpui::SharedString;
 
 /// Presentation-independent context-menu model produced by the editor.

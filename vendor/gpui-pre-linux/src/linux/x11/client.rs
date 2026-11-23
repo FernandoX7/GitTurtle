@@ -335,6 +335,15 @@ impl std::ops::Deref for X11Connection {
 
 impl Drop for X11Connection {
     fn drop(&mut self) {
+        ACTIVE_X11_CLIENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|weak| Weak::ptr_eq(weak, &Rc::downgrade(&self.0.0)))
+            {
+                *slot = None;
+            }
+        });
         let mut state = self.0.0.borrow_mut();
         state.common.borrow_mut().after_runnable = None;
         for token in std::mem::take(&mut state.registrations) {
@@ -557,6 +566,9 @@ impl X11Connection {
             })
         })));
         // From here on, `Drop` removes whatever was registered if a later step fails.
+        ACTIVE_X11_CLIENT.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::downgrade(&connection.0.0));
+        });
         connection.register_sources(&handle, background_executor)?;
         let xcb_connection = connection.0.0.borrow().xcb_connection.clone();
         xcb_flush(&xcb_connection);
@@ -609,6 +621,15 @@ impl X11Client {
                     match event {
                         XDPEvent::WindowAppearance(appearance) => {
                             client.with_common(|common| common.appearance = appearance);
+                            for window in client.0.borrow_mut().windows.values_mut() {
+                                window.window.set_appearance(appearance);
+                            }
+                            crate::linux::xdg_desktop_portal::mark_initial_appearance_applied(
+                                appearance,
+                            );
+                        }
+                        XDPEvent::AccentColor => {
+                            let appearance = client.with_common(|common| common.appearance);
                             for window in client.0.borrow_mut().windows.values_mut() {
                                 window.window.set_appearance(appearance);
                             }
@@ -2681,6 +2702,11 @@ fn get_scale_factor(
         return scale;
     }
 
+    if let Some(scale) = kde_kcmfonts_scale_factor() {
+        log::info!("Using scale factor from KDE kcmfonts: {}", scale);
+        return scale;
+    }
+
     if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
         log::info!("Using RandR scale factor: {}", scale);
         return scale;
@@ -2688,6 +2714,83 @@ fn get_scale_factor(
 
     log::info!("Using default scale factor: 1.0");
     1.0
+}
+
+thread_local! {
+    static ACTIVE_X11_CLIENT: RefCell<Option<Weak<RefCell<X11ClientState>>>> =
+        const { RefCell::new(None) };
+}
+
+pub(crate) fn active_x11_window_identifier()
+-> Option<futures::future::BoxFuture<'static, Option<WindowIdentifier>>> {
+    let client = ACTIVE_X11_CLIENT.with(|slot| slot.borrow().as_ref().and_then(Weak::upgrade))?;
+    let state = client.borrow();
+    let x_window = state
+        .keyboard_focused_window
+        .and_then(|focused| state.windows.get(&focused))
+        .or_else(|| state.windows.values().next())
+        .map(|window| window.window.x_window as u64);
+    Some(Box::pin(async move {
+        x_window.map(WindowIdentifier::from_xid)
+    }))
+}
+
+fn kde_kcmfonts_scale_factor() -> Option<f32> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })?;
+    let path = config_dir.join("kcmfonts");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > 64 * 1024 {
+        return None;
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, 64 * 1024 + 1), &mut text).ok()?;
+    (text.len() <= 64 * 1024)
+        .then(|| parse_kde_force_font_dpi(&text))
+        .flatten()
+}
+
+fn parse_kde_force_font_dpi(text: &str) -> Option<f32> {
+    let mut in_general = false;
+    for raw_line in text.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_general = line.eq_ignore_ascii_case("[General]");
+            continue;
+        }
+        if !in_general {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("forceFontDPI")
+            && let Ok(dpi) = value.trim().parse::<f32>()
+            && dpi.is_finite()
+            && dpi > 0.0
+        {
+            return Some((dpi / 96.0).clamp(0.5, 4.0));
+        }
+    }
+    None
 }
 
 fn get_randr_scale_factor(connection: &XCBConnection, screen_index: usize) -> Option<f32> {
@@ -3211,5 +3314,15 @@ mod tests {
 
         // Assert pressing space while on the Czech layout still types a space.
         assert_eq!(key_event_state.key_get_utf8(space), " ");
+    }
+
+    #[test]
+    fn parses_kde_kcmfonts_force_font_dpi() {
+        assert_eq!(
+            parse_kde_force_font_dpi("[General]\nforceFontDPI=144\n"),
+            Some(1.5)
+        );
+        assert_eq!(parse_kde_force_font_dpi("[General]\nforceFontDPI=0\n"), None);
+        assert_eq!(parse_kde_force_font_dpi("[Other]\nforceFontDPI=192\n"), None);
     }
 }

@@ -3670,34 +3670,61 @@ impl GitTurtle {
                         )),
                     ),
             )
-            .when(cfg!(target_os = "macos"), |col| {
-                let accent_focus = self.page_focus("use-system-accent", cx);
-                col.child(
-                    div()
-                        .on_children_prepainted(
-                            self.keep_in_view(vec![Some(accent_focus.clone())], cx),
+            .when(
+                {
+                    #[cfg(target_os = "macos")]
+                    {
+                        true
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        crate::appearance::has_linux_portal_accent(cx)
+                    }
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    {
+                        false
+                    }
+                },
+                |col| {
+                    let accent_focus = self.page_focus("use-system-accent", cx);
+                    let (title, detail) = if cfg!(target_os = "macos") {
+                        (
+                            "Use macOS accent color",
+                            "Match your macOS System Settings accent color, fitted to GitTurtle's readability rules.",
                         )
-                        .debug_selector(|| "use-system-accent-switch".into())
-                        .child(
-                            switch_row(
-                                "use-system-accent",
-                                "Use macOS accent color",
-                                "Use macOS accent color",
-                                "Match your macOS System Settings accent color, fitted to GitTurtle's readability rules.",
-                                &[],
-                                cx,
+                    } else {
+                        (
+                            "Use desktop accent color",
+                            "Match your desktop accent color, fitted to GitTurtle's readability rules.",
+                        )
+                    };
+                    col.child(
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(vec![Some(accent_focus.clone())], cx),
                             )
-                            .track_focus(&accent_focus)
-                            .checked(self.settings.system_accent)
-                            .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                this.settings.system_accent = *checked;
-                                crate::appearance::sync_macos_system_accent(cx);
-                                this.apply_appearance(window, cx);
-                                this.save_preferences(window, cx);
-                            })),
-                        ),
-                )
-            })
+                            .debug_selector(|| "use-system-accent-switch".into())
+                            .child(
+                                switch_row(
+                                    "use-system-accent",
+                                    title,
+                                    title,
+                                    detail,
+                                    &[],
+                                    cx,
+                                )
+                                .track_focus(&accent_focus)
+                                .checked(self.settings.system_accent)
+                                .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                    this.settings.system_accent = *checked;
+                                    crate::appearance::sync_macos_system_accent(cx);
+                                    this.apply_appearance(window, cx);
+                                    this.save_preferences(window, cx);
+                                })),
+                            ),
+                    )
+                },
+            )
             .child(self.render_theme_picker(theme_columns, cx))
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))

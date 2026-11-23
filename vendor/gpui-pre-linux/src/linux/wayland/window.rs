@@ -1089,6 +1089,7 @@ impl WaylandWindowStatePtr {
         if ime_enabled {
             client.enable_ime();
         } else {
+            client.clear_ime_password();
             client.disable_ime();
         }
     }

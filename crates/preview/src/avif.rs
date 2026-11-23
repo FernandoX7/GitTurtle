@@ -1,6 +1,6 @@
 //! AVIF images for the confined Linux helper: `mp4parse` reads the container,
-//! the system libdav1d (through dav1d-rs) decodes the AV1 items, and this
-//! module converts, orients and scales the result. Only
+//! the system libdav1d (dynamically loaded via `crate::dav1d_dlopen`) decodes
+//! the AV1 items, and this module converts, orients and scales the result. Only
 //! [`crate::image_helper`] calls this.
 //!
 //! Reviewed limits (security review requirements 5, 6 and 10): one decoder per
@@ -13,16 +13,17 @@
 //! picture is alive beside the RGBA image, the primary's while it converts and
 //! then the alpha's, never both items' pictures (requirement 18); with film
 //! grain, an item's decoder also holds its ungrained reference until the decode
-//! returns. dav1d-sys 0.8.3 writes some C layouts
-//! by hand (#126): the picture accessors used here read fields whose offsets
-//! `libdav1d_layouts_match_the_binding` proves, and nothing parses a sequence
-//! header outside libdav1d.
+//! returns. `crate::dav1d_dlopen::abi` defines exact C API 7 layouts verified
+//! against `<dav1d/dav1d.h>` by `libdav1d_layouts_match_the_binding`, and
+//! nothing parses a sequence header outside libdav1d.
 #![forbid(unsafe_code)]
 
 use std::time::Instant;
 
-use dav1d::pixel::YUVRange;
-use dav1d::{Decoder, Picture, PixelLayout, PlanarImageComponent, Settings};
+use crate::dav1d_dlopen::{
+    self as dav1d, BitsPerComponent, Decoder, Picture, PixelLayout, PlanarImageComponent, Settings,
+    YUVRange,
+};
 use image::metadata::{
     Cicp, CicpColorPrimaries, CicpMatrixCoefficients, CicpTransferCharacteristics,
     CicpVideoFullRangeFlag,
@@ -191,7 +192,7 @@ struct ItemPicture {
 /// then `send_pending_data` after `Again`, within a fixed number of steps. The
 /// picture must have the declared size before anything reads it.
 fn decode_item(data: &[u8], (width, height): (u32, u32)) -> Result<ItemPicture, ImageErrorKind> {
-    let mut settings = Settings::new();
+    let mut settings = Settings::new().map_err(|_| ImageErrorKind::DecoderFailed)?;
     settings.set_n_threads(1);
     settings.set_max_frame_delay(1);
     // At most 32,000,000 by `check_size`.
@@ -202,7 +203,7 @@ fn decode_item(data: &[u8], (width, height): (u32, u32)) -> Result<ItemPicture, 
     settings.set_output_invisible_frames(false);
     let mut decoder =
         Decoder::with_settings(&settings).map_err(|_| ImageErrorKind::DecoderFailed)?;
-    let mut sent = decoder.send_data(data.to_vec(), None, None, None);
+    let mut sent = decoder.send_data(data);
     for _ in 0..MAX_DECODE_STEPS {
         match sent {
             Ok(()) | Err(dav1d::Error::Again) => {}
@@ -231,13 +232,13 @@ fn failure(error: dav1d::Error) -> ImageErrorKind {
     match error {
         // A frame header larger than `ispe`, refused before its allocation.
         dav1d::Error::UnknownError(code) if code == -ERANGE => ImageErrorKind::AvifSizeMismatch,
-        dav1d::Error::NotEnoughMemory => ImageErrorKind::DecoderFailed,
+        dav1d::Error::NotEnoughMemory | dav1d::Error::Unavailable => ImageErrorKind::DecoderFailed,
         _ => ImageErrorKind::AvifUnreadable,
     }
 }
 
 /// The planes a picture's conversion reads: luma alone for a monochrome
-/// picture and for every alpha item, whatever its layout (dav1d-rs #123).
+/// picture and for every alpha item, whatever its layout.
 fn components(layout: PixelLayout, alpha: bool) -> &'static [PlanarImageComponent] {
     use PlanarImageComponent::{U, V, Y};
     match layout {
@@ -249,13 +250,13 @@ fn components(layout: PixelLayout, alpha: bool) -> &'static [PlanarImageComponen
 
 /// A plane checked against its stride and length, read as 8-bit or
 /// little-endian 16-bit samples.
-struct Samples {
-    data: dav1d::Plane,
+struct Samples<'a> {
+    data: dav1d::Plane<'a>,
     stride: usize,
     wide: bool,
 }
 
-impl Samples {
+impl Samples<'_> {
     fn get(&self, x: usize, y: usize) -> u32 {
         let at = y * self.stride + if self.wide { x * 2 } else { x };
         if self.wide {
@@ -268,14 +269,15 @@ impl Samples {
 
 /// The layout, depth and planes of `picture`, each plane long enough for
 /// `stride × (rows − 1) + width × bytes per sample`.
-fn planes(
-    picture: &Picture,
+fn planes<'a>(
+    picture: &'a Picture,
     alpha: bool,
-) -> Result<(PixelLayout, u32, Vec<Samples>), ImageErrorKind> {
-    let layout = picture.pixel_layout();
+) -> Result<(PixelLayout, u32, Vec<Samples<'a>>), ImageErrorKind> {
+    let layout = picture
+        .pixel_layout()
+        .ok_or(ImageErrorKind::AvifUnreadable)?;
     let bits = picture.bit_depth();
-    if !matches!(bits, 8 | 10 | 12)
-        || picture.bits_per_component() != Some(dav1d::BitsPerComponent(bits))
+    if !matches!(bits, 8 | 10 | 12) || picture.bits_per_component() != Some(BitsPerComponent(bits))
     {
         return Err(ImageErrorKind::AvifUnreadable);
     }
@@ -289,8 +291,11 @@ fn planes(
             _ => (width.div_ceil(2), height.div_ceil(2)),
         };
         let row_bytes = columns * if wide { 2 } else { 1 };
-        let stride = picture.stride(component) as usize;
-        let data = picture.plane(component);
+        let stride = usize::try_from(picture.stride(component))
+            .map_err(|_| ImageErrorKind::AvifUnreadable)?;
+        let data = picture
+            .plane(component)
+            .ok_or(ImageErrorKind::AvifUnreadable)?;
         let needed = stride
             .checked_mul(rows - 1)
             .and_then(|bytes| bytes.checked_add(row_bytes));
@@ -315,9 +320,9 @@ impl Nclx {
     /// The values the AV1 sequence header signals, for an item without `nclx`.
     fn signalled(picture: &Picture) -> Self {
         Self {
-            primaries: picture.color_primaries() as u8,
-            transfer: picture.transfer_characteristic() as u8,
-            matrix: picture.matrix_coefficients() as u8,
+            primaries: picture.color_primaries(),
+            transfer: picture.transfer_characteristic(),
+            matrix: picture.matrix_coefficients(),
             full_range: picture.color_range() == YUVRange::Full,
         }
     }
@@ -1462,15 +1467,11 @@ mod tests {
 
     /// The AVIF counterpart of the real `hayro-jpeg2000` panic, kept for A3:
     /// the 8-bit quadrants without `colr`, their sequence header rewritten to
-    /// the reserved primaries 0, transfer 0 and matrix 3. Every check before
-    /// decoding passes and libdav1d decodes the picture; dav1d-rs 0.11.1's
-    /// `color_primaries`, `transfer_characteristic` and `matrix_coefficients`
-    /// each reach `unreachable!()` on them (also for primaries 3 and 13 to 21,
-    /// transfer 3), so reading the signalled colour panics, and `serve` turns
-    /// the panic into `DecoderFailed`.
+    /// Reserved colour code points (primaries 0, transfer 0, matrix 3) are read
+    /// cleanly without panicking by `dav1d_dlopen` and rejected by `convert` as
+    /// `AvifUnreadable` instead of unwinding inside the confined helper.
     #[test]
-    fn a_dav1d_rs_panic_past_every_check_ends_as_decoder_failed() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
+    fn reserved_colour_code_points_do_not_panic_and_return_unreadable() {
         let bytes = fixture("avif-reserved-colour.avif");
         let context = mp4parse::read_avif(&mut &bytes[..], ParseStrictness::Normal).unwrap();
         assert!(context.unsupported_features.is_empty());
@@ -1484,21 +1485,13 @@ mod tests {
         let picture = decode_item(context.primary_item_coded_data().unwrap(), (64, 48))
             .unwrap()
             .picture;
-        let panics =
-            |read: &dyn Fn(&Picture)| catch_unwind(AssertUnwindSafe(|| read(&picture))).is_err();
-        assert!(panics(&|picture| {
-            let _ = picture.color_primaries();
-        }));
-        assert!(panics(&|picture| {
-            let _ = picture.transfer_characteristic();
-        }));
-        assert!(panics(&|picture| {
-            let _ = picture.matrix_coefficients();
-        }));
+        assert_eq!(picture.color_primaries(), 0);
+        assert_eq!(picture.transfer_characteristic(), 0);
+        assert_eq!(picture.matrix_coefficients(), 3);
         drop(picture);
         assert_eq!(
             avif("avif-reserved-colour.avif", 1600).unwrap_err(),
-            ImageErrorKind::DecoderFailed
+            ImageErrorKind::AvifUnreadable
         );
     }
 
@@ -1634,27 +1627,16 @@ mod tests {
     }
 
     /// The crates the source scan follows by name, each with the exact
-    /// requirement every declaration of it must have. A dependency on one
-    /// under another name would reach it without the words the scan looks
-    /// for, and another version, or the same one from anywhere but crates.io,
-    /// is not the code that was reviewed: `DAV1D_RS_METHODS` lists dav1d-rs
-    /// 0.11.1's functions, `dav1d-sys` 0.8.3's C layouts are written by hand,
-    /// and `moxcms` 0.8.1 is the version `image` and `hayro-jpeg2000` use.
-    const NAMED_BY_THE_SCAN: [(&str, &str); 3] = [
-        ("moxcms", "=0.8.1"),
-        ("dav1d", DAV1D_RS_REQUIREMENT),
-        ("dav1d-sys", "=0.8.3"),
-    ];
-    /// The requirement every declaration of dav1d-rs must have: exactly the
-    /// version whose functions `DAV1D_RS_METHODS` lists.
-    const DAV1D_RS_REQUIREMENT: &str = "=0.11.1";
-    /// The one source each of them may come from, as Cargo names crates.io.
+    /// requirement every declaration of it must have. `dav1d` and `dav1d-sys`
+    /// are no longer dependencies (`libdav1d.so.7` is loaded dynamically via
+    /// `src/dav1d_dlopen.rs`) and are actively refused if reintroduced.
+    const NAMED_BY_THE_SCAN: [(&str, &str); 1] = [("moxcms", "=0.8.1")];
+    /// Crates that must never be reintroduced into `crates/preview` or `Cargo.lock`.
+    const FORBIDDEN_DAV1D_CRATES: [&str; 2] = ["dav1d", "dav1d-sys"];
+    /// The one source each scanned crate may come from, as Cargo names crates.io.
     const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
-    /// The crate the scan follows that `name` names, with its requirement:
-    /// case and `-` against `_` do not tell crate names apart, since
-    /// crates.io holds one crate for every such spelling (`dav1d_sys` is
-    /// `dav1d-sys`).
+    /// The crate the scan follows that `name` names, with its requirement.
     fn named_by_the_scan(name: &str) -> Option<(&'static str, &'static str)> {
         let fold = |name: &str| name.to_ascii_lowercase().replace('_', "-");
         NAMED_BY_THE_SCAN
@@ -1662,30 +1644,24 @@ mod tests {
             .find(|(scanned, _)| *scanned == fold(name))
     }
 
-    /// What Cargo read from `package`'s manifest that would reach a crate the
-    /// scan follows past it, sorted: a dependency on `moxcms`, `dav1d` or
-    /// `dav1d-sys`, however spelled (`named_by_the_scan`), under another name
-    /// (`moxcms renamed cms`), from anywhere but crates.io (`dav1d from
-    /// git+https://…`, `dav1d from a path`) or at any requirement but its own
-    /// exact pin (`dav1d ^0.11.1`), each of any kind and for any target. Each
-    /// dependency's `rename`, `source` and `req` are Cargo's, so a key,
-    /// package name, source or requirement is read as the build reads it,
-    /// however it is written. A root `[patch]` or `[replace]` is not a
-    /// dependency's and does not show here: `unreviewed_lock_entries` reads
-    /// what it resolves. The scan follows the names the code uses, so any
-    /// other crate is refused under a name the scan follows (`dav1d-shim
-    /// renamed dav1d`), and any other crate from anywhere but crates.io
-    /// (`shim from a path`), whose library could take such a name (`[lib]
-    /// name = "dav1d"`). A crate published to crates.io under another name
-    /// with such a library is not refused here: it needs a new dependency in
-    /// this manifest, which review reads.
+    fn is_forbidden_dav1d_crate(name: &str) -> bool {
+        let fold = name.to_ascii_lowercase().replace('_', "-");
+        FORBIDDEN_DAV1D_CRATES.contains(&fold.as_str())
+    }
+
     fn unreviewed_dependencies(package: &serde_json::Value) -> Vec<String> {
         let mut found = Vec::new();
         for dependency in package["dependencies"].as_array().unwrap() {
             let name = dependency["name"].as_str().unwrap();
             let rename = dependency["rename"].as_str();
-            // A path dependency has no source.
             let source = dependency["source"].as_str().unwrap_or("a path");
+            if is_forbidden_dav1d_crate(name) {
+                found.push(format!("{name} forbidden"));
+                continue;
+            }
+            if let Some(rename) = rename.filter(|rename| is_forbidden_dav1d_crate(rename)) {
+                found.push(format!("{name} renamed {rename}"));
+            }
             let Some((_, pin)) = named_by_the_scan(name) else {
                 if let Some(rename) = rename.filter(|rename| named_by_the_scan(rename).is_some()) {
                     found.push(format!("{name} renamed {rename}"));
@@ -1804,6 +1780,12 @@ mod tests {
                 if Some(version) != pin.strip_prefix('=') {
                     found.push(format!("Cargo.lock {name} {version}"));
                 }
+            }
+        }
+        for package in &packages {
+            let named = *package.get("name").expect("every entry has a name");
+            if is_forbidden_dav1d_crate(named) {
+                found.push(format!("Cargo.lock {named} forbidden"));
             }
         }
         found.sort();
@@ -2263,7 +2245,8 @@ mod tests {
         }
         for (index, &name) in tokens.iter().enumerate() {
             let before = |back: usize| index.checked_sub(back).map_or("", |at| tokens[at]);
-            let uncalled = DAV1D_RS_METHODS.contains(&name)
+            let uncalled = module != "src/dav1d_dlopen.rs"
+                && DAV1D_RS_METHODS.contains(&name)
                 && !DAV1D_RS_METHODS_CALLED.contains(&name)
                 && (avif || !ORDINARY_WORDS.contains(&name));
             if uncalled || DAV1D_RS_ALLOCATOR_FUNCTIONS.contains(&name) {
@@ -2279,26 +2262,38 @@ mod tests {
                 "dav1d_sys" if module != "src/lib.rs" || !version_call => {
                     found.push("dav1d_sys outside the version call".to_owned());
                 }
-                "type" => found.extend(
+                "type" if module != "src/dav1d_dlopen.rs" => found.extend(
                     up_to(statement, &[";"])
                         .filter(|name| item(name))
                         .map(|name| format!("type … {name}")),
                 ),
-                "impl" => found.extend(
+                "impl" if module != "src/dav1d_dlopen.rs" => found.extend(
                     up_to(statement, &["{", ";"])
                         .filter(|name| item(name))
                         .map(|name| format!("impl … {name}")),
                 ),
-                "use" if up_to(statement, &[";"]).any(|name| name == "dav1d") => found.extend(
-                    up_to(statement, &[";"])
-                        .filter(|name| {
-                            *name == "*"
-                                || (is_word(name)
-                                    && !matches!(*name, "use" | "dav1d")
-                                    && !DAV1D_RS_ITEMS.contains(name))
-                        })
-                        .map(|name| format!("use dav1d…{name}")),
-                ),
+                "use"
+                    if module != "src/dav1d_dlopen.rs"
+                        && up_to(statement, &[";"]).any(|name| name == "dav1d") =>
+                {
+                    let is_dlopen_import =
+                        statement.starts_with(&["use", "crate", "::", "dav1d_dlopen", "::"]);
+                    found.extend(
+                        up_to(statement, &[";"])
+                            .filter(|name| {
+                                *name == "*"
+                                    || (is_word(name)
+                                        && !matches!(*name, "use" | "dav1d")
+                                        && !(is_dlopen_import
+                                            && matches!(
+                                                *name,
+                                                "crate" | "dav1d_dlopen" | "self" | "as"
+                                            ))
+                                        && !DAV1D_RS_ITEMS.contains(name))
+                            })
+                            .map(|name| format!("use dav1d…{name}")),
+                    );
+                }
                 "pub"
                     if avif
                         && statement
@@ -2368,25 +2363,21 @@ mod tests {
         assert_eq!(compiled_outside_the_scan(&package), Vec::<String>::new());
         assert_eq!(unreviewed_dependencies(&package), Vec::<String>::new());
         let dependencies = package["dependencies"].as_array().unwrap();
-        assert!(dependencies.iter().any(|dependency| {
-            dependency["name"] == "dav1d" && dependency["req"] == DAV1D_RS_REQUIREMENT
+        assert!(
+            dependencies.iter().any(|dependency| {
+                dependency["name"] == "moxcms" && dependency["req"] == "=0.8.1"
+            })
+        );
+        assert!(!dependencies.iter().any(|dependency| {
+            dependency["name"]
+                .as_str()
+                .is_some_and(is_forbidden_dav1d_crate)
         }));
         // Manifests that a reading of the TOML as text misses or misreads,
-        // each in a scratch package that is its own workspace: keys and names
-        // with escapes, a table header or a pin inside a string, a
-        // requirement inherited from the workspace, and a second declaration
-        // in another target-specific table. Requirements are Cargo's own
-        // (`0.11.1` is `^0.11.1`).
+        // each in a scratch package that is its own workspace.
         let header = "[workspace]\n\n[package]\nname = \"scratch\"\nversion = \"0.0.0\"\n\
                       edition = \"2024\"\n";
         let script = "fn main() { println!(\"cargo::rustc-cfg=test\"); }";
-        let linux = "\n[target.'cfg(target_os = \"linux\")'.dependencies]\n";
-        let dav1d =
-            format!("{linux}dav1d = {{ version = \"=0.11.1\", default-features = false }}\n");
-        let second = format!(
-            "{linux}dav1d = \"=0.11.1\"\n\n[target.'cfg(unix)'.dependencies]\ndav1d = \"0.11\"\n"
-        );
-        let fork = "[package]\nname = \"dav1d\"\nversion = \"0.11.1\"\nedition = \"2021\"\n";
         let shim = "[package]\nname = \"dav1d-shim\"\nversion = \"0.11.1\"\nedition = \"2021\"\n";
         let lib_named = "[package]\nname = \"shim\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
                          [lib]\nname = \"dav1d\"\n";
@@ -2417,64 +2408,22 @@ mod tests {
                 &["library elsewhere/root.rs"][..],
             ),
             (
-                "dav1d pinned",
+                "dav1d crate forbidden",
                 "\n[dependencies]\ndav1d = \"=0.11.1\"\n",
                 &[][..],
-                &[][..],
+                &["dav1d forbidden"][..],
             ),
             (
-                "dav1d pinned in a target-specific table",
-                dav1d.as_str(),
+                "dav1d-sys crate forbidden",
+                "\n[dependencies]\ndav1d-sys = \"=0.8.3\"\n",
                 &[][..],
-                &[][..],
+                &["dav1d-sys forbidden"][..],
             ),
             (
-                "dav1d pinned in a table of its own",
-                "\n[target.'cfg(unix)'.dependencies.dav1d]\nversion = \"=0.11.1\"\n",
+                "dav1d-sys spelled with an underscore is forbidden",
+                "\n[dependencies]\ndav1d_sys = \"0.8\"\n",
                 &[][..],
-                &[][..],
-            ),
-            (
-                "dav1d unpinned",
-                "\n[dependencies]\ndav1d = \"0.11.1\"\n",
-                &[][..],
-                &["dav1d ^0.11.1"][..],
-            ),
-            (
-                "dav1d pinned to another version",
-                "\n[dependencies]\ndav1d = \"=0.11.2\"\n",
-                &[][..],
-                &["dav1d =0.11.2"][..],
-            ),
-            (
-                "dav1d unpinned in a second target-specific table",
-                second.as_str(),
-                &[][..],
-                &["dav1d ^0.11"][..],
-            ),
-            (
-                "the pin only inside a string",
-                "description = 'dav1d = \"=0.11.1\"'\n\n[dependencies]\ndav1d = \">=0.11.1\"\n",
-                &[][..],
-                &["dav1d >=0.11.1"][..],
-            ),
-            (
-                "an inherited requirement",
-                "\n[workspace.dependencies]\ndav1d = \"0.11\"\n\n[dependencies]\ndav1d.workspace = true\n",
-                &[][..],
-                &["dav1d ^0.11"][..],
-            ),
-            (
-                "a renamed dav1d",
-                "\n[dependencies]\nav1 = { package = \"dav1d\", version = \"=0.11.1\" }\n",
-                &[][..],
-                &["dav1d renamed av1"][..],
-            ),
-            (
-                "a renamed dav1d-sys behind an escaped key",
-                "\n[target.'cfg(unix)'.dependencies]\nsys = { \"p\\u0061ckage\" = \"dav1d-sys\", version = \"=0.8.3\" }\n",
-                &[][..],
-                &["dav1d-sys renamed sys"][..],
+                &["dav1d_sys forbidden"][..],
             ),
             (
                 "moxcms renamed by an escaped name",
@@ -2488,32 +2437,6 @@ mod tests {
                 &[][..],
                 &["moxcms renamed cms"][..],
             ),
-            // The pinned version from another source: Cargo names the source
-            // and leaves the requirement as written.
-            (
-                "a git dav1d at the pin",
-                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", git = \"https://fork.invalid/dav1d\" }\n",
-                &[][..],
-                &["dav1d from git+https://fork.invalid/dav1d"][..],
-            ),
-            (
-                "a path dav1d at the pin",
-                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", path = \"fork\" }\n",
-                &[("fork/Cargo.toml", fork), ("fork/src/lib.rs", "")][..],
-                &["dav1d from a path"][..],
-            ),
-            (
-                "a dav1d from another registry at the pin",
-                "\n[dependencies]\ndav1d = { version = \"=0.11.1\", registry-index = \"sparse+https://registry.invalid/\" }\n",
-                &[][..],
-                &["dav1d from sparse+https://registry.invalid/"][..],
-            ),
-            (
-                "dav1d-sys unpinned",
-                "\n[dependencies]\ndav1d-sys = \"0.8.3\"\n",
-                &[][..],
-                &["dav1d-sys ^0.8.3"][..],
-            ),
             (
                 "moxcms pinned to another version",
                 "\n[dependencies]\nmoxcms = { version = \"=0.8.0\", default-features = false }\n",
@@ -2521,17 +2444,10 @@ mod tests {
                 &["moxcms =0.8.0"][..],
             ),
             (
-                "dav1d-sys and moxcms at their pins",
-                "\n[dependencies]\ndav1d-sys = \"=0.8.3\"\nmoxcms = { version = \"=0.8.1\", default-features = false }\n",
+                "moxcms at its pin",
+                "\n[dependencies]\nmoxcms = { version = \"=0.8.1\", default-features = false }\n",
                 &[][..],
                 &[][..],
-            ),
-            // Cargo reports a name as it is written.
-            (
-                "dav1d-sys spelled with an underscore",
-                "\n[dependencies]\ndav1d_sys = \"0.8\"\n",
-                &[][..],
-                &["dav1d_sys ^0.8"][..],
             ),
             (
                 "moxcms spelled with a capital",
@@ -2539,9 +2455,6 @@ mod tests {
                 &[][..],
                 &["Moxcms ^0.8"][..],
             ),
-            // Another crate where the scan reads a reviewed one: under a
-            // name it follows, or from a path, where its library can be
-            // named `dav1d` with no rename at all.
             (
                 "another crate renamed dav1d",
                 "\n[dependencies]\ndav1d = { package = \"dav1d-shim\", version = \"=0.11.1\", path = \"shim\" }\n",
@@ -2621,75 +2534,32 @@ mod tests {
         let moxcms = entry("moxcms", "0.8.1", Some(CRATES_IO));
         let dav1d = entry("dav1d", "0.11.1", Some(CRATES_IO));
         let sys = entry("dav1d-sys", "0.8.3", Some(CRATES_IO));
-        // A `[replace]` keeps the original, naming its replacement.
-        let replaced = dav1d.replace(
-            "checksum = \"0123\"\n",
-            &format!("replace = \"dav1d 0.11.1 ({git})\"\n"),
-        );
         let unused = "\n[[patch.unused]]\nname = \"dav1d\"\nversion = \"0.11.1\"\n";
         for (case, entries, found) in [
+            ("reviewed", moxcms.clone(), &[][..]),
             (
-                "reviewed",
-                [&moxcms, &dav1d, &sys].map(String::as_str).concat(),
-                &[][..],
+                "moxcms patched to a git repository",
+                entry("moxcms", "0.8.1", Some(git)),
+                &["Cargo.lock moxcms 0.8.1 from git+https://fork.invalid/fork#0123456789abcdef"][..],
             ),
             (
-                "dav1d patched to a path and moxcms to a git repository",
-                [
-                    entry("moxcms", "0.8.1", Some(git)),
-                    entry("dav1d", "0.11.1", None),
-                    sys.clone(),
-                ]
-                .concat(),
-                &[
-                    "Cargo.lock dav1d 0.11.1 from a path",
-                    "Cargo.lock moxcms 0.8.1 from git+https://fork.invalid/fork#0123456789abcdef",
-                ][..],
+                "dav1d reintroduced",
+                [moxcms.as_str(), dav1d.as_str()].concat(),
+                &["Cargo.lock dav1d forbidden"][..],
             ),
             (
-                "dav1d replaced from a git repository",
-                [
-                    &moxcms,
-                    &replaced,
-                    &entry("dav1d", "0.11.1", Some(git)),
-                    &sys,
-                ]
-                .map(String::as_str)
-                .concat(),
-                &[
-                    "Cargo.lock dav1d 0.11.1 from git+https://fork.invalid/fork#0123456789abcdef",
-                    "Cargo.lock dav1d: 2 entries",
-                ][..],
-            ),
-            (
-                "dav1d-sys at another version",
-                [
-                    &moxcms,
-                    &dav1d,
-                    &entry("dav1d-sys", "0.8.4", Some(CRATES_IO)),
-                ]
-                .map(String::as_str)
-                .concat(),
-                &["Cargo.lock dav1d-sys 0.8.4"][..],
-            ),
-            (
-                "dav1d-sys patched to a path under its other spelling",
-                [&moxcms, &dav1d, &sys, &entry("dav1d_sys", "0.8.3", None)]
-                    .map(String::as_str)
-                    .concat(),
-                &[
-                    "Cargo.lock dav1d-sys 0.8.3 from a path",
-                    "Cargo.lock dav1d-sys: 2 entries",
-                ][..],
+                "dav1d-sys reintroduced",
+                [moxcms.as_str(), sys.as_str()].concat(),
+                &["Cargo.lock dav1d-sys forbidden"][..],
             ),
             (
                 "no moxcms",
-                [&dav1d, &sys].map(String::as_str).concat(),
+                String::new(),
                 &["Cargo.lock moxcms: 0 entries"][..],
             ),
             (
                 "an unused patch",
-                [moxcms.as_str(), dav1d.as_str(), sys.as_str(), unused].concat(),
+                [moxcms.as_str(), unused].concat(),
                 &[][..],
             ),
         ] {
@@ -2774,7 +2644,8 @@ mod tests {
         for path in DAV1D_RS_FUNCTIONS_CALLED {
             assert!(avif_code.contains(&format!("{path}(")), "{path}");
         }
-        assert!(code("src/lib.rs").contains("dav1d_sys::dav1d_version()"));
+        assert!(code("src/lib.rs").contains("dav1d_dlopen::version()"));
+        assert!(code("src/lib.rs").contains("dav1d_dlopen::preload()"));
         // A call, item or rename outside the list fails in each form the scan
         // reads: a word outside comments, a qualified path or a rename.
         let (avif, other, lib) = ("src/avif.rs", "src/image_helper.rs", "src/lib.rs");
@@ -3175,21 +3046,21 @@ mod tests {
                 .unwrap();
             assert!(text.contains("\n#![forbid(unsafe_code)]\n"), "{path}");
         }
-        // `libdav1d_version` holds the one unsafe block of the image decoders.
+        // `lib.rs` delegates libdav1d loading to `dav1d_dlopen.rs` and holds
+        // zero unsafe blocks of its own.
         let (_, lib) = sources
             .iter()
             .find(|(path, _)| path.ends_with("/lib.rs"))
             .unwrap();
-        assert_eq!(lib.matches(["unsafe", " {"].concat().as_str()).count(), 1);
+        assert_eq!(lib.matches(["unsafe", " {"].concat().as_str()).count(), 0);
     }
 
-    /// Requirement 8: the C layouts dav1d-sys 0.8.3 writes by hand against the
-    /// installed headers. Equal sizes for every struct C writes into Rust
-    /// memory and equal offsets for every field read; #126 and its picture
-    /// counterpart are the recorded mismatches.
+    /// Requirement 8: the C ABI 7 layouts in `crate::dav1d_dlopen::abi` match
+    /// the installed `<dav1d/dav1d.h>` headers with zero size or offset
+    /// mismatches.
     #[test]
     fn libdav1d_layouts_match_the_binding() {
-        use dav1d_sys::*;
+        use crate::dav1d_dlopen::abi::*;
         let probe = r#"
 #include <stddef.h>
 #include <stdio.h>
@@ -3407,6 +3278,15 @@ int main(void) {
                 "offset Dav1dSequenceHeader.hbd",
                 offset_of!(Dav1dSequenceHeader, hbd),
             ),
+            ("size Dav1dSequenceHeader", size_of::<Dav1dSequenceHeader>()),
+            (
+                "offset Dav1dPicture.frame_hdr_ref",
+                offset_of!(Dav1dPicture, frame_hdr_ref),
+            ),
+            (
+                "offset Dav1dPicture.n_itut_t35",
+                offset_of!(Dav1dPicture, n_itut_t35),
+            ),
             (
                 "offset Dav1dSequenceHeader.color_range",
                 offset_of!(Dav1dSequenceHeader, color_range),
@@ -3422,23 +3302,7 @@ int main(void) {
                 c[name]
             );
         }
-        // The recorded mismatches: #126 (the sequence header) and C1 (the
-        // picture's reference pointers one word early, `n_itut_t35` moved).
-        // If dav1d-sys fixes them, this fails so the review is updated.
-        let word = size_of::<usize>();
-        assert_ne!(
-            c["size Dav1dSequenceHeader"],
-            size_of::<Dav1dSequenceHeader>()
-        );
-        assert_eq!(
-            c["offset Dav1dPicture.frame_hdr_ref"],
-            offset_of!(Dav1dPicture, frame_hdr_ref) + word
-        );
-        assert_ne!(
-            c["offset Dav1dPicture.n_itut_t35"],
-            offset_of!(Dav1dPicture, n_itut_t34)
-        );
-        assert_eq!(c.len(), rust.len() + 4);
+        assert_eq!(c.len(), rust.len() + 1);
     }
 
     proptest::proptest! {

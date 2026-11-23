@@ -18,13 +18,18 @@ use resvg::{tiny_skia, usvg};
 pub mod animation;
 pub mod error;
 pub use error::PreviewError;
-// Linux decodes AVIF with mp4parse and dav1d, and JPEG 2000 with
-// hayro-jpeg2000, only inside the same confined helper as PDF pages.
+// Linux decodes AVIF with mp4parse and dynamically loaded libdav1d.so.7, and
+// JPEG 2000 with hayro-jpeg2000, only inside the confined helper.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 mod avif;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod dav1d_dlopen;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -45,6 +50,11 @@ mod jpeg2000;
 ))]
 mod jpeg2000_hayro;
 pub mod mermaid;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod mesh_helper;
 pub mod metadata;
 pub mod model3d;
 #[cfg(target_os = "macos")]
@@ -486,27 +496,23 @@ pub fn confined_image_format(bytes: &[u8]) -> Option<pdf_helper::ConfinedFormat>
     }
 }
 
-/// The system libdav1d's version string, as `dav1d_version()` reports it. The
-/// only `unsafe` in the helper's image decoders: dav1d-rs does not wrap it.
+/// Preloads the system `libdav1d.so.7` inside the Linux helper before
+/// `RLIMIT_NOFILE` and seccomp confinement. Never fails if libdav1d is absent.
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn preload_libdav1d() {
+    dav1d_dlopen::preload();
+}
+
+/// The system libdav1d's version string, as `dav1d_version()` reports it.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 fn libdav1d_version() -> Option<String> {
-    // SAFETY: `dav1d_version` takes no arguments and returns a pointer to a
-    // NUL-terminated string in libdav1d's read-only data, which lives as long
-    // as the library; it is checked for null and copied before use.
-    unsafe {
-        let version = dav1d_sys::dav1d_version();
-        (!version.is_null())
-            .then(|| {
-                std::ffi::CStr::from_ptr(version)
-                    .to_str()
-                    .ok()
-                    .map(str::to_owned)
-            })
-            .flatten()
-    }
+    dav1d_dlopen::version()
 }
 
 fn check_dimensions(width: u32, height: u32) -> Result<()> {

@@ -1183,13 +1183,19 @@ impl<M: InputModeKind> TextElement<M> {
 
         window.on_mouse_event({
             let state = self.state.clone();
-            move |_: &MouseUpEvent, phase, _, cx| {
+            move |event: &MouseUpEvent, phase, _, cx| {
                 if !phase.bubble() {
                     return;
                 }
 
                 // Stop auto-scroll when mouse up, and also stop selecting.
-                state.update(cx, |state, _| {
+                state.update(cx, |state, cx| {
+                    #[cfg(target_os = "linux")]
+                    if event.button == MouseButton::Left && state.selecting {
+                        state.write_selection_to_primary(cx);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = (event, cx);
                     state.auto_scroll.stop();
                     state.selecting = false;
                     state.column_select_start = None;

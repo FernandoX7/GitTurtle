@@ -98,7 +98,7 @@ pub enum InputContentType {
 }
 
 impl InputContentType {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) const fn ns_text_content_type(self) -> Option<&'static str> {
         match self {
             Self::Name => Some("name"),
@@ -163,13 +163,13 @@ pub(super) fn sync_native_content_type(
         return;
     }
 
-    #[cfg(all(target_os = "macos", not(test)))]
+    #[cfg(any(all(target_os = "macos", not(test)), target_os = "linux"))]
     gpui_base::input::set_text_content_type(
         window,
         content_type.and_then(InputContentType::ns_text_content_type),
     );
 
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(not(any(all(target_os = "macos", not(test)), target_os = "linux")))]
     let _ = (window, content_type);
 }
 

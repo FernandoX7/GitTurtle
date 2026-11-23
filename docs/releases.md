@@ -180,6 +180,11 @@ first twelve characters of the source commit:
 - `GitTurtle-VERSION-COMMIT12-linux-x86_64-release.tar.gz` for `x86_64-unknown-linux-gnu`
 - `GitTurtle-VERSION-COMMIT12-linux-aarch64-release.tar.gz` for `aarch64-unknown-linux-gnu`
 
+Additional Linux distribution recipes prepared in-repo for future publication
+(not yet published by `release.yml`): Arch AUR (`packaging/aur/gitturtle-bin/`),
+Debian/Ubuntu `.deb` builder (`scripts/package-deb.sh`), and Flatpak manifest +
+AppStream metainfo (`packaging/flatpak/`).
+
 Each extracts to one directory named after the archive without `.tar.gz`. The
 ad-hoc macOS archive is `GitTurtle-VERSION-COMMIT12-macos-arm64-release.zip`; the
 notarized name is given under the signing component below. `SHA256SUMS`,

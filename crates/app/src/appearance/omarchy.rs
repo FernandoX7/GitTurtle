@@ -227,6 +227,9 @@ impl Shown {
 /// The machinery behind [`Omarchy`]: the reread queue and the watch.
 struct Follower {
     root: PathBuf,
+    /// Whether `root` tracks [`default_root`] dynamically across focus
+    /// refreshes and rereads (true in production, false for injected test roots).
+    uses_default_root: bool,
     /// The latest reread started; a result from an older one is dropped.
     generation: u64,
     requests: mpsc::UnboundedSender<Request>,
@@ -259,7 +262,7 @@ enum Watch {
     Off,
     Starting,
     On(#[expect(dead_code, reason = "held so the watch lasts")] notify::RecommendedWatcher),
-    /// `current/` could not be watched; focus return tries again.
+    /// Neither `current/` nor its parent `omarchy/` could be watched; focus return tries again.
     Failed,
 }
 
@@ -270,9 +273,12 @@ enum Request {
     /// Read now: launch, focus return, or the theme was just selected. While writes are
     /// settling it joins them instead.
     Now,
-    /// `current/` itself was removed or moved (as a migration of Omarchy's state does), so
-    /// the watch of that epoch sees nothing more: read once the writes settle, and let the
-    /// next focus return watch again.
+    /// `current/` itself was created, removed, or atomically replaced inside its parent
+    /// `omarchy/` directory: read once the writes settle and reattach the watcher so
+    /// subsequent switches inside the new `current/` inode still trigger live reloads.
+    Reattach(u64),
+    /// `current/` was removed or moved away without a parent watcher covering it: read once
+    /// the writes settle and mark the watch failed so the next focus return watches again.
     Lost(u64),
 }
 
@@ -281,11 +287,15 @@ pub(crate) struct Initial(Option<oneshot::Receiver<()>>);
 
 /// Read the desktop's Omarchy theme and follow it while it is `selected`.
 pub(crate) fn start(selected: bool, cx: &mut App) -> Initial {
-    start_at(default_root(), selected, cx)
+    let initial = install_with_mode(default_root(), true, cx);
+    follow(selected, cx);
+    if selected { initial } else { Initial(None) }
 }
 
-/// [`start`] for `root`. Launch waits only for a read it will apply: with another theme
-/// selected, the first read still offers the card, but nothing waits for it.
+/// [`start`] for an explicit `root` (used by tests). Launch waits only for a read it will
+/// apply: with another theme selected, the first read still offers the card, but nothing
+/// waits for it.
+#[cfg(test)]
 fn start_at(root: Option<PathBuf>, selected: bool, cx: &mut App) -> Initial {
     let initial = install(root, cx);
     follow(selected, cx);
@@ -303,7 +313,12 @@ pub(crate) async fn ready(initial: Initial, cx: &AsyncApp) {
 
 /// Own the state for `root` (the directory standing in for `current/`) and start its first
 /// read. Without a root nothing is read and no card is offered.
+#[cfg(test)]
 pub(crate) fn install(root: Option<PathBuf>, cx: &mut App) -> Initial {
+    install_with_mode(root, false, cx)
+}
+
+fn install_with_mode(root: Option<PathBuf>, uses_default_root: bool, cx: &mut App) -> Initial {
     let Some(root) = root else {
         return Initial(None);
     };
@@ -313,6 +328,7 @@ pub(crate) fn install(root: Option<PathBuf>, cx: &mut App) -> Initial {
     let rereads = cx.spawn(async move |cx| reread(receiver, cx).await);
     cx.set_global(Follower {
         root,
+        uses_default_root,
         generation: 0,
         requests,
         following: false,
@@ -343,8 +359,11 @@ pub(crate) fn install(root: Option<PathBuf>, cx: &mut App) -> Initial {
 async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncApp) {
     while let Some(request) = requests.next().await {
         let mut lost = Vec::new();
-        if let Request::Lost(epoch) = request {
-            lost.push(epoch);
+        let mut reattach = Vec::new();
+        match request {
+            Request::Lost(epoch) => lost.push(epoch),
+            Request::Reattach(epoch) => reattach.push(epoch),
+            Request::Settled | Request::Now => {}
         }
         if request != Request::Now {
             let executor = cx.background_executor().clone();
@@ -355,8 +374,10 @@ async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncAp
                     Either::Left((None, _)) => return,
                     Either::Right(_) => break,
                     Either::Left((Some(request), _)) => {
-                        if let Request::Lost(epoch) = request {
-                            lost.push(epoch);
+                        match request {
+                            Request::Lost(epoch) => lost.push(epoch),
+                            Request::Reattach(epoch) => reattach.push(epoch),
+                            Request::Settled | Request::Now => {}
                         }
                         if executor.now().duration_since(first) >= LONGEST_SETTLE {
                             break;
@@ -369,21 +390,50 @@ async fn reread(mut requests: mpsc::UnboundedReceiver<Request>, cx: &mut AsyncAp
             }
         }
         while let Ok(request) = requests.try_recv() {
-            if let Request::Lost(epoch) = request {
-                lost.push(epoch);
+            match request {
+                Request::Lost(epoch) => lost.push(epoch),
+                Request::Reattach(epoch) => reattach.push(epoch),
+                Request::Settled | Request::Now => {}
             }
         }
         for epoch in lost {
             cx.update(|cx| lose_watch(epoch, cx));
         }
-        let Some((generation, root)) = cx.update(begin) else {
+        let Some((generation, root, uses_default_root)) = cx.update(begin) else {
             return;
         };
-        let reading = cx
+        let (resolved_root, reading) = cx
             .background_executor()
-            .spawn(async move { read(&root) })
+            .spawn(async move {
+                let active_root = if uses_default_root {
+                    default_root().unwrap_or(root)
+                } else {
+                    root
+                };
+                let reading = read(&active_root);
+                (active_root, reading)
+            })
             .await;
-        cx.update(|cx| finish(generation, reading, cx));
+        cx.update(|cx| {
+            let root_changed = cx.try_global::<Follower>().is_some_and(|follower| {
+                follower.uses_default_root && follower.root != resolved_root
+            });
+            if root_changed {
+                cx.global_mut::<Follower>().root = resolved_root;
+            }
+            finish(generation, reading, cx);
+            if root_changed
+                && cx.try_global::<Follower>().is_some_and(|follower| {
+                    !matches!(follower.watch, Watch::Off) && wanted(follower, cx)
+                })
+            {
+                start_watch(cx);
+            } else {
+                for epoch in reattach {
+                    reattach_watch(epoch, cx);
+                }
+            }
+        });
     }
 }
 
@@ -398,12 +448,28 @@ fn lose_watch(epoch: u64, cx: &mut App) {
     }
 }
 
-/// Start a reread: its generation and the root to read.
-fn begin(cx: &mut App) -> Option<(u64, PathBuf)> {
+/// `current/` was created, removed, or atomically replaced inside its watched parent
+/// directory: restart the watch so it attaches to the new `current/` inode (if present)
+/// while keeping the parent watched.
+fn reattach_watch(epoch: u64, cx: &mut App) {
+    if cx.try_global::<Follower>().is_some_and(|follower| {
+        follower.epoch == epoch && !matches!(follower.watch, Watch::Off) && wanted(follower, cx)
+    }) {
+        start_watch(cx);
+    }
+}
+
+/// Start a reread: its generation, the current root, and whether to re-resolve default roots
+/// off the UI thread.
+fn begin(cx: &mut App) -> Option<(u64, PathBuf, bool)> {
     cx.has_global::<Follower>().then(|| {
         let follower = cx.global_mut::<Follower>();
         follower.generation += 1;
-        (follower.generation, follower.root.clone())
+        (
+            follower.generation,
+            follower.root.clone(),
+            follower.uses_default_root,
+        )
     })
 }
 
@@ -518,11 +584,15 @@ fn sync_watch(cx: &mut App) {
 
 /// A window regained focus: read again, and retry a watch that could not start.
 pub(crate) fn refresh(cx: &mut App) {
-    let Some(follower) = cx.try_global::<Follower>() else {
+    if !cx.has_global::<Follower>() {
         return;
+    }
+    let retry = {
+        let follower = cx.global_mut::<Follower>();
+        let _ = follower.requests.unbounded_send(Request::Now);
+        matches!(follower.watch, Watch::Failed)
     };
-    let _ = follower.requests.unbounded_send(Request::Now);
-    if matches!(follower.watch, Watch::Failed) {
+    if retry {
         start_watch(cx);
     }
 }
@@ -568,10 +638,36 @@ fn watch(
     #[cfg(test)] delivered: Delivered,
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher as _;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     let watched = root.clone();
+    let watched_parent = root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let has_parent_watch = Arc::new(AtomicBool::new(watched_parent.is_some()));
+    let parent_watched_flag = Arc::clone(&has_parent_watch);
+    let event_parent = watched_parent.clone();
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         let request = match &event {
-            Ok(event) if lost(&watched, event) => Some(Request::Lost(epoch)),
+            Ok(event)
+                if event_parent
+                    .as_deref()
+                    .is_some_and(|parent| lost(parent, event)) =>
+            {
+                Some(Request::Lost(epoch))
+            }
+            Ok(event) if root_replaced(&watched, event) => {
+                if parent_watched_flag.load(Ordering::Acquire) {
+                    Some(Request::Reattach(epoch))
+                } else if lost(&watched, event) {
+                    Some(Request::Lost(epoch))
+                } else {
+                    Some(Request::Settled)
+                }
+            }
             Ok(event) => settles(&watched, event).then_some(Request::Settled),
             // An error may have lost events: read again to be sure.
             Err(_) => Some(Request::Settled),
@@ -588,12 +684,33 @@ fn watch(
                 .extend(event.paths.iter().cloned());
         }
     })?;
-    watcher.watch(&root, notify::RecursiveMode::NonRecursive)?;
+    let parent_result = watched_parent
+        .as_deref()
+        .map(|parent| watcher.watch(parent, notify::RecursiveMode::NonRecursive));
+    let parent_ok = matches!(parent_result, Some(Ok(())));
+    if !parent_ok {
+        has_parent_watch.store(false, Ordering::Release);
+    }
+    let root_result = watcher.watch(&root, notify::RecursiveMode::NonRecursive);
+    if !parent_ok {
+        root_result?;
+    }
     Ok(watcher)
 }
 
+/// Whether `current/` itself was created, removed, or atomically replaced inside its parent
+/// `omarchy/` directory (for example via a symlink swap or late creation).
+fn root_replaced(root: &Path, event: &notify::Event) -> bool {
+    matches!(
+        event.kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Remove(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+    ) && event.paths.iter().any(|path| path == root)
+}
+
 /// Whether `current/` itself was removed or moved away: inotify then reports the watched
-/// directory's own path, and the watch sees nothing of a directory that replaces it.
+/// directory's own path, and a `current/`-only watch sees nothing of its replacement.
 fn lost(root: &Path, event: &notify::Event) -> bool {
     matches!(
         event.kind,
@@ -1013,8 +1130,8 @@ mod tests {
             outcome: Ok(mapped(bytes)),
         };
 
-        let (older, _) = cx.update(begin).unwrap();
-        let (newer, _) = cx.update(begin).unwrap();
+        let (older, _, _) = cx.update(begin).unwrap();
+        let (newer, _, _) = cx.update(begin).unwrap();
         cx.update(|cx| finish(newer, reading(WHITE, "White"), cx));
         cx.update(|cx| finish(older, reading(LATTE, "Catppuccin Latte"), cx));
         let shown = cx.read(|cx| card(cx).unwrap());
@@ -1480,16 +1597,17 @@ mod tests {
         assert_eq!(applied(cx), mapped(TOKYO_NIGHT).palette);
     }
 
-    /// When `current/` itself goes (moved aside, as a migration of Omarchy's state does), the
-    /// watch sees nothing more of the directory that replaces it: the loss is read once the
-    /// writes settle and marks the watch failed, and the next focus return watches the new
-    /// directory, which then follows a switch again.
+    /// When `current/` and its parent directory are moved aside (as a full state migration
+    /// does), the watch marks failed on loss, and the next focus return watches the recreated
+    /// directory and follows switches again.
     #[gpui::test]
     fn a_lost_directory_is_read_and_watched_again_on_focus_return(cx: &mut TestAppContext) {
         crate::local_refresh::require_native_watch();
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        let parent = fixture.path().join("omarchy");
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = current(&parent, TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| {
             drop(install(Some(root.clone()), cx));
             follow(true, cx);
@@ -1502,7 +1620,8 @@ mod tests {
         let caption = |cx: &TestAppContext| cx.read(|cx| card(cx).unwrap().description);
         assert_eq!(caption(cx), "Follows Tokyo Night");
 
-        std::fs::rename(&root, fixture.path().join("current.old")).unwrap();
+        std::fs::rename(&root, parent.join("current.old")).unwrap();
+        std::fs::rename(&parent, fixture.path().join("omarchy.old")).unwrap();
         delivered(cx, &root);
         cx.run_until_parked();
         cx.executor().advance_clock(QUIET_PERIOD);
@@ -1510,13 +1629,65 @@ mod tests {
         assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::Failed)));
         assert_eq!(caption(cx), "Keeping Tokyo Night");
 
-        current(fixture.path(), WHITE, "white");
+        std::fs::create_dir_all(&parent).unwrap();
+        current(&parent, WHITE, "white");
         cx.update(refresh);
         cx.run_until_parked();
         assert!(watch_on(cx), "focus return watches the new directory");
         assert_eq!(caption(cx), "Follows White");
         switch(&root, LATTE, "catppuccin-latte", "switched");
         delivered(cx, &root.join("switched"));
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(caption(cx), "Follows Catppuccin Latte");
+    }
+
+    /// Watching the parent `omarchy/` directory keeps live reload working across atomic
+    /// `current/` directory/symlink swaps and late creation of `current/` without requiring a
+    /// window focus return.
+    #[gpui::test]
+    fn parent_watch_recovers_atomic_current_replacement_and_late_creation(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let parent = fixture.path().join("omarchy");
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = parent.join("current");
+
+        // Start before `current/` exists: parent watch attaches immediately.
+        cx.update(|cx| {
+            drop(install(Some(root.clone()), cx));
+            follow(true, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.read(|cx| matches!(cx.global::<Follower>().watch, Watch::On(_))));
+
+        // Late-created `current/` is detected via the parent watch and reattaches `current/`.
+        current(&parent, TOKYO_NIGHT, "tokyo-night");
+        delivered(cx, &root);
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        let caption = |cx: &TestAppContext| cx.read(|cx| card(cx).unwrap().description);
+        assert_eq!(caption(cx), "Follows Tokyo Night");
+
+        // Atomic replacement of `current/` (rename old aside, move new directory in) recovers
+        // live reload without focus return and continues following switches inside `current/`.
+        cx.read(|cx| cx.global::<Follower>().delivered.lock().unwrap().clear());
+        let staged = parent.join("current.next");
+        std::fs::create_dir_all(staged.join(THEME_DIRECTORY)).unwrap();
+        std::fs::write(staged.join(THEME_DIRECTORY).join(COLORS_FILE), WHITE).unwrap();
+        std::fs::write(staged.join(NAME_FILE), "white\n").unwrap();
+        std::fs::rename(&root, parent.join("current.prev")).unwrap();
+        std::fs::rename(&staged, &root).unwrap();
+        let sentinel = parent.join("swap-done");
+        std::fs::write(&sentinel, b"1").unwrap();
+        delivered(cx, &sentinel);
+        cx.executor().advance_clock(QUIET_PERIOD);
+        cx.run_until_parked();
+        assert_eq!(caption(cx), "Follows White");
+
+        switch(&root, LATTE, "catppuccin-latte", "switched-after-swap");
+        delivered(cx, &root.join("switched-after-swap"));
         cx.executor().advance_clock(QUIET_PERIOD);
         cx.run_until_parked();
         assert_eq!(caption(cx), "Follows Catppuccin Latte");

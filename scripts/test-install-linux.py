@@ -190,7 +190,10 @@ class RealBundleTests(unittest.TestCase):
         metadata = self.data / "gitturtle/build-info.json"
         self.assertTrue(metadata.is_file())
         self.assertTrue((self.data / "gitturtle/licenses/THIRD_PARTY_NOTICES.md").is_file())
-        self.assertIn(str(self.binary), (self.data / f"applications/{installer.APP_ID}.desktop").read_text())
+        desktop_text = (self.data / f"applications/{installer.APP_ID}.desktop").read_text()
+        self.assertIn(str(self.binary), desktop_text)
+        self.assertIn("SingleMainWindow=true\n", desktop_text)
+        self.assertIn("Keywords=Git;VersionControl;VCS;Repository;Commit;Diff;Branch;PR;Merge;\n", desktop_text)
         # Distinguishable prior payload without launching any native application.
         self.binary.write_bytes(b"prior installed executable fixture")
         metadata.write_text('{"fixture": "previous build"}\n')

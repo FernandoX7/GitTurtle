@@ -365,13 +365,13 @@ mod real {
                 1_600,
                 AvifSizeMismatch,
             ),
-            // dav1d-rs panics on the reserved colour values past every check;
-            // the helper contains the panic under its filter.
+            // Reserved colour values are read safely by dav1d_dlopen without
+            // panicking and rejected as AvifUnreadable inside the helper.
             (
                 "reserved colour values",
                 fixture("avif-reserved-colour.avif"),
                 1_600,
-                DecoderFailed,
+                AvifUnreadable,
             ),
             ("image grid", fixture("avif-grid.avif"), 1_600, AvifGrid),
             (

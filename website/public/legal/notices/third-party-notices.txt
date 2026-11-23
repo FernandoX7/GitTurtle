@@ -18,6 +18,7 @@ AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses a
 | `gpui-pre-linux` 0.3.12 | Apache-2.0 (vendor/gpui-pre-linux/LICENSE-APACHE) | Patch (vendor/gpui-pre-linux/GITTURTLE-PATCH.md) |
 | `gpui-pre-macos` 0.3.12 | Apache-2.0 (vendor/gpui-pre-macos/LICENSE-APACHE) | Patch (vendor/gpui-pre-macos/README.gitturtle.md) |
 | `gpui-pre-macros` 0.3.12 | Apache-2.0 (vendor/gpui-pre-macros/LICENSE-APACHE) | Patch (vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
+| `gpui-pre-wgpu` 0.3.12 | Apache-2.0 (vendor/gpui-pre-wgpu/LICENSE-APACHE) | Patch (vendor/gpui-pre-wgpu/GITTURTLE-PATCH.md) |
 | `mermaid-rs-renderer` 0.3.1 | MIT (vendor/mermaid-rs-renderer/LICENSE) | Patch (vendor/mermaid-rs-renderer/GITTURTLE-PATCH.md) |
 
 Other direct and transitive dependencies are pinned in `Cargo.lock`. A package's
@@ -53,12 +54,14 @@ decode both formats with ImageIO.
   checksum `Cargo.lock` pins; the generated file's own SHA-256 differs. The
   source is also available from crates.io and
   [the upstream repository](https://github.com/mozilla/mp4parse-rust).
-- `dav1d` 0.11.1 and `dav1d-sys` 0.8.3 (MIT) bind libdav1d, VideoLAN's AV1
-  decoder (BSD-2-Clause, copyright VideoLAN and the dav1d authors).
-  libdav1d is a dynamically linked system library: builds use the
-  distribution's package (Arch `dav1d`, Ubuntu `libdav1d7`) through
-  pkg-config, never a copy built from source, and GitTurtle packages do not
-  ship it. A package that ever bundles libdav1d must ship its notice too.
+- VideoLAN's `libdav1d` AV1 decoder (BSD-2-Clause, copyright VideoLAN and the
+  dav1d authors) is loaded dynamically at runtime via `dlopen("libdav1d.so.7")`
+  inside GitTurtle's confined Linux preview helper before seccomp confinement
+  (`crates/preview/src/dav1d_dlopen.rs`), without `dav1d`/`dav1d-sys` crates or
+  a hard `NEEDED` link dependency. GitTurtle starts cleanly when `libdav1d` is
+  absent and uses the distribution's package (Arch `dav1d`, Ubuntu `libdav1d7`)
+  when present for AVIF previews; GitTurtle packages do not ship `libdav1d`. A
+  package that ever bundles `libdav1d` must ship its notice too.
 - `hayro-jpeg2000` 0.5.0 (`Apache-2.0 OR MIT`) decodes JPEG 2000; it already
   reached Linux builds through hayro and now adds its `image` integration.
 - `moxcms` 0.8.1 (`BSD-3-Clause OR Apache-2.0`, with its own license files)

@@ -27,17 +27,24 @@ use crate::{
     ImagePreview, MAX_INPUT_BYTES, MAX_PDF_PAGE_TEXT_BYTES, MAX_PDF_PAGES, MAX_PDF_SEARCH_MATCHES,
     MAX_PDF_SEARCH_PAGES, MAX_PDF_SEARCH_QUERY_BYTES, MAX_PDF_SEARCH_SNIPPET_BYTES,
     PDF_PREVIEW_EDGE, PdfPageText, PdfSearchMatch, PdfSearchReply, check_dimensions,
-    check_pdf_input, check_pdf_search_input, image_helper, pdf_hayro, scaled_dimensions,
+    check_pdf_input, check_pdf_search_input, image_helper, mesh_helper, pdf_hayro,
+    scaled_dimensions,
 };
 pub use image_helper::{
     ConfinedFormat, IMAGE_REQUEST_HEADER_BYTES, ImageErrorKind, ImageFlags, ImageReply,
     ImageTimings, MAX_HELPER_IMAGE_EDGE, encode_image_request, max_image_reply_bytes,
     read_image_reply,
 };
+pub use mesh_helper::{
+    MAX_MESHOPT_REPLY_BYTES, MAX_UFBX_REPLY_BYTES, MeshErrorKind, UFBX_REQUEST_HEADER_BYTES,
+    encode_meshopt_request, encode_ufbx_request, read_meshopt_reply, read_ufbx_reply,
+};
 
 /// Changes whenever any frame changes; both sides refuse any other value.
-/// Version 2 added the image frame; version 3 adds the PDF text-search frame (`GTPS`/`GTPR`).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Version 2 added the image frame; version 3 added the PDF text-search frame
+/// (`GTPS`/`GTPR`); version 4 adds confined 3D `ufbx` (`GTMq`/`GTMr`) and
+/// `meshopt` (`GTXq`/`GTXr`) frames.
+pub const PROTOCOL_VERSION: u32 = 4;
 /// The fixed request header [`encode_request`] returns.
 pub const REQUEST_HEADER_BYTES: usize = 16;
 /// The fixed prefix header for a PDF text-search request (`GTPS` + version + query_len + pdf_len).
@@ -210,9 +217,9 @@ pub fn read_reply(mut input: impl Read) -> io::Result<Result<PageReply, ErrorKin
     Ok(reply)
 }
 
-/// Maximum request frame size across PDF page, PDF search, and image requests.
-pub const MAX_REQUEST_BYTES: usize =
-    MAX_INPUT_BYTES + SEARCH_REQUEST_HEADER_BYTES + MAX_PDF_SEARCH_QUERY_BYTES;
+/// Maximum request frame size across PDF page, PDF search, image, ufbx, and
+/// batched meshopt requests.
+pub const MAX_REQUEST_BYTES: usize = MAX_INPUT_BYTES + mesh_helper::MAX_MESHOPT_REQUEST_OVERHEAD;
 
 /// Encode the header and UTF-8 query prefix for a confined PDF text-search request.
 /// Write the returned bytes followed by `pdf` unchanged.
@@ -384,6 +391,12 @@ pub fn serve_buffer<B: AsRef<[u8]> + Send + Sync + 'static>(
     if magic == image_helper::REQUEST_MAGIC {
         return image_helper::serve_slice(&slice[4..], output);
     }
+    if magic == mesh_helper::UFBX_REQUEST_MAGIC {
+        return mesh_helper::serve_ufbx_slice(&slice[4..], output);
+    }
+    if magic == mesh_helper::MESHOPT_REQUEST_MAGIC {
+        return mesh_helper::serve_meshopt_slice(&slice[4..], output);
+    }
     if magic == SEARCH_REQUEST_MAGIC {
         let reply = parse_pdf_search_buffer(slice).and_then(|(query, pdf_start, length)| {
             let data = std::sync::Arc::new(SubSlice {
@@ -533,6 +546,12 @@ fn serve_with(
         Ok(()) if magic == REQUEST_MAGIC => read_request(&mut input),
         Ok(()) if magic == image_helper::REQUEST_MAGIC => {
             return image_helper::serve(input, output);
+        }
+        Ok(()) if magic == mesh_helper::UFBX_REQUEST_MAGIC => {
+            return mesh_helper::serve_ufbx(input, output);
+        }
+        Ok(()) if magic == mesh_helper::MESHOPT_REQUEST_MAGIC => {
+            return mesh_helper::serve_meshopt(input, output);
         }
         Ok(()) if magic == SEARCH_REQUEST_MAGIC => {
             let reply = read_search_request(&mut input).and_then(|(query, pdf)| {
@@ -1069,12 +1088,13 @@ mod tests {
 
     #[test]
     fn pdf_frames_keep_their_layout_and_an_unknown_magic_is_refused() {
-        // Version 2 added the image frame; version 3 added the PDF text-search frame (`GTPS`/`GTPR`).
-        assert_eq!(PROTOCOL_VERSION, 3);
+        // Version 2 added the image frame; version 3 added PDF text-search (`GTPS`/`GTPR`);
+        // version 4 added confined 3D `ufbx` (`GTMq`/`GTMr`) and `meshopt` (`GTXq`/`GTXr`).
+        assert_eq!(PROTOCOL_VERSION, 4);
         let source = pdf(1);
         let header = encode_request(7, &source).unwrap();
         assert_eq!(&header[..4], b"GTPq");
-        assert_eq!(u32_at(&header, 4), 3);
+        assert_eq!(u32_at(&header, 4), 4);
         assert_eq!(u32_at(&header, 8), 7);
         assert_eq!(u32_at(&header, 12) as usize, source.len());
         let reply = page_reply(2, 2, present("text"));

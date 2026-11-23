@@ -2378,14 +2378,85 @@ fn not_cancelled(control: &OperationControl) -> anyhow::Result<()> {
 /// the platform's secure store ([`github::transport::SecureStore`]).
 #[cfg(not(test))]
 mod account {
-    use crate::github::transport::{CredentialStore, GhTransport, SecureStore};
+    use crate::github::transport::{GhTransport, SecureStore};
     use gitturtle_core::OperationControl;
-    pub(super) fn connect(control: &OperationControl) -> anyhow::Result<String> {
-        GhTransport::connect_existing(control)
+    #[cfg(target_os = "linux")]
+    use std::time::Duration;
+
+    #[cfg(target_os = "linux")]
+    pub(super) struct ParentWindowHandle {
+        future: futures::future::BoxFuture<'static, Option<ashpd::WindowIdentifier>>,
+        executor: gpui_kit::BackgroundExecutor,
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) struct ParentWindowHandle;
+
+    pub(super) fn capture_parent_window(cx: &gpui_kit::App) -> ParentWindowHandle {
+        #[cfg(target_os = "linux")]
+        {
+            ParentWindowHandle {
+                future: gpui_linux::active_window_identifier(),
+                executor: cx.background_executor().clone(),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cx;
+            ParentWindowHandle
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resolve_parent(
+        handle: ParentWindowHandle,
+    ) -> (Option<ashpd::WindowIdentifier>, Option<String>) {
+        use futures::future::{Either, select};
+        use std::pin::pin;
+        let guard = futures::executor::block_on(async move {
+            let fut = pin!(handle.future);
+            let timeout = pin!(handle.executor.timer(Duration::from_millis(250)));
+            match select(fut, timeout).await {
+                Either::Left((id, _)) => id,
+                Either::Right(_) => None,
+            }
+        });
+        let raw = guard.as_ref().map(ToString::to_string);
+        (guard, raw)
+    }
+
+    pub(super) fn connect(
+        control: &OperationControl,
+        parent: ParentWindowHandle,
+    ) -> anyhow::Result<String> {
+        #[cfg(target_os = "linux")]
+        {
+            // Keep `_guard` alive until Secret Service prompts complete so Wayland
+            // `xdg-foreign` exported surface handles remain valid.
+            let (_guard, window_id) = resolve_parent(parent);
+            GhTransport::connect_existing_with_window_id(control, window_id)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = parent;
+            GhTransport::connect_existing(control)
+        }
     }
     /// `control` is the request's own, so its Cancel stops a keyring prompt on Linux.
-    pub(super) fn remove(control: &OperationControl) -> anyhow::Result<()> {
-        SecureStore.remove(control)
+    pub(super) fn remove(
+        control: &OperationControl,
+        parent: ParentWindowHandle,
+    ) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let (_guard, window_id) = resolve_parent(parent);
+            SecureStore.remove_with_window_id(control, window_id)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = parent;
+            SecureStore.remove_with_window_id(control, None)
+        }
     }
 }
 /// A test build's stand-in for the account, which answers as a signed-in GitHub CLI and an
@@ -2399,6 +2470,10 @@ mod account {
     use std::sync::Mutex;
     /// The account the stand-in connects.
     pub(super) const LOGIN: &str = "stand-in-reviewer";
+    pub(super) struct ParentWindowHandle;
+    pub(super) fn capture_parent_window(_cx: &gpui_kit::App) -> ParentWindowHandle {
+        ParentWindowHandle
+    }
     /// Every control a removal got, so a test can tell it was the request's own, whose
     /// Cancel stops the keyring's prompt, each with the settings directory of the test whose
     /// operation executor ran it, which an executor inherits from the test that started it
@@ -2408,10 +2483,10 @@ mod account {
     /// own.
     static REMOVED_WITH: Mutex<Vec<(std::path::PathBuf, OperationControl)>> =
         Mutex::new(Vec::new());
-    pub(super) fn connect(_: &OperationControl) -> anyhow::Result<String> {
+    pub(super) fn connect(_: &OperationControl, _: ParentWindowHandle) -> anyhow::Result<String> {
         Ok(LOGIN.into())
     }
-    pub(super) fn remove(control: &OperationControl) -> anyhow::Result<()> {
+    pub(super) fn remove(control: &OperationControl, _: ParentWindowHandle) -> anyhow::Result<()> {
         let test = crate::preferences::test_settings_directory();
         REMOVED_WITH
             .lock()
@@ -2785,9 +2860,64 @@ struct Panel {
     templates: Vec<github::Template>,
     attempts: Vec<drafts::Attempt>,
     local_control: Option<HistoryCancellation>,
+    /// Linux: whether a passwordless `Default_keyring.keyring` was detected on disk
+    /// (and not yet dismissed by the user). Always false in test builds unless injected.
+    #[cfg(target_os = "linux")]
+    plaintext_keyring_note: bool,
     /// The script a test's requests are answered from, in place of a transport ([`Opener`]).
     #[cfg(test)]
     scripted: Option<github::Scripted>,
+}
+
+/// Calm, one-time informational note displayed on Linux when the user's desktop
+/// keyring uses a passwordless `Default_keyring.keyring` (stock Omarchy default).
+#[cfg(target_os = "linux")]
+const LINUX_PLAINTEXT_KEYRING_NOTE: &str = "Your desktop keyring is currently unlocked without a login password (Default_keyring.keyring), so stored tokens remain readable on disk by processes running as your user. You can set a keyring password in your desktop keyring settings.";
+
+/// Returns true when `path` is a regular non-symlink file beginning with `[keyring]`,
+/// the header gnome-keyring writes for passwordless keyrings.
+#[cfg(target_os = "linux")]
+fn is_passwordless_gnome_keyring_file(path: &std::path::Path) -> bool {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::io::Read as _;
+    let Ok(fd) = open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let mut file = std::fs::File::from(fd);
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let Ok(n) = file.read(&mut buf) else {
+        return false;
+    };
+    let head = std::str::from_utf8(&buf[..n]).unwrap_or("");
+    head.trim_start().starts_with("[keyring]")
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn detect_passwordless_default_keyring() -> bool {
+    let data_dir = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".local/share"))
+        });
+    data_dir.is_some_and(|dir| {
+        is_passwordless_gnome_keyring_file(&dir.join("keyrings/Default_keyring.keyring"))
+    })
 }
 impl Panel {
     fn new(
@@ -2798,6 +2928,32 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> Self {
         let worktree = PathText::new("Local worktree: ", repo.path());
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            let dismissed = owner
+                .upgrade()
+                .is_some_and(|app| app.read(cx).settings.linux_plaintext_keyring_note_dismissed);
+            if !dismissed {
+                cx.spawn(async move |panel, cx| {
+                    let detected = cx
+                        .background_executor()
+                        .spawn(async { detect_passwordless_default_keyring() })
+                        .await;
+                    if detected {
+                        let _ = panel.update(cx, |this, cx| {
+                            let still_undismissed = this.owner.upgrade().is_none_or(|app| {
+                                !app.read(cx).settings.linux_plaintext_keyring_note_dismissed
+                            });
+                            if still_undismissed {
+                                this.plaintext_keyring_note = true;
+                                cx.notify();
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
         let mut this=Self {
             review:review::ReviewState::new(window,cx),
             conversations:conversations::State::new(window,cx),
@@ -2813,6 +2969,8 @@ impl Panel {
             naming: false,
             restored: false,
             left: None,
+            #[cfg(target_os = "linux")]
+            plaintext_keyring_note: false,
             #[cfg(test)]
             scripted:None,
         };
@@ -3737,11 +3895,12 @@ impl Panel {
             cx.notify();
             return;
         }
+        let parent = account::capture_parent_window(cx);
         self.run(
             RequestKind::Connect,
-            |control| {
+            move |control| {
                 not_cancelled(&control)?;
-                account::connect(&control)
+                account::connect(&control, parent)
             },
             |result, this, _, _| match result {
                 Ok(login) => {
@@ -3761,11 +3920,12 @@ impl Panel {
     /// the removal began: then it keeps the authorization and says so. Its
     /// removal once ignored Cancel.
     fn disconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = account::capture_parent_window(cx);
         self.run(
             RequestKind::Disconnect,
-            |control| {
+            move |control| {
                 not_cancelled(&control)?;
-                account::remove(&control)
+                account::remove(&control, parent)
             },
             |result, this, _, _| match result {
                 Ok(()) => {
@@ -5537,6 +5697,72 @@ impl Render for Panel {
                 .child(div().flex().flex_col().gap_2().on_children_prepainted(self.review.body_blocks.starts())
                 .child(path_label("github-worktree",&self.worktree).text_color(rgb(p.muted)))
                 .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
+                .map(|col| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        col.when(self.plaintext_keyring_note && !self.review.fixture, |col| {
+                            col.child(
+                                div()
+                                    .id("github-plaintext-keyring-note")
+                                    .debug_selector(|| "github-plaintext-keyring-note".into())
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .py_2()
+                                    .px(text_inset())
+                                    .rounded(px(6.))
+                                    .bg(rgb(p.subtle))
+                                    .child(
+                                        label(
+                                            "github-plaintext-keyring-note-text",
+                                            LINUX_PLAINTEXT_KEYRING_NOTE,
+                                        )
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_color(rgb(p.muted)),
+                                    )
+                                    .child(
+                                        self.part("plaintext-keyring-dismiss", div(), cx)
+                                            .child(review::starts_block())
+                                            .child(
+                                                self.button(
+                                                    "github-plaintext-keyring-dismiss",
+                                                    "Dismiss",
+                                                    "",
+                                                    false,
+                                                    cx,
+                                                )
+                                                .debug_selector(|| {
+                                                    "github-plaintext-keyring-dismiss".into()
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.plaintext_keyring_note = false;
+                                                    if let Some(owner) = this.owner.upgrade() {
+                                                        owner.update(cx, |app, cx| {
+                                                            app.settings
+                                                                .linux_plaintext_keyring_note_dismissed =
+                                                                true;
+                                                            app.save_preferences(window, cx);
+                                                        });
+                                                    }
+                                                    window.focus(
+                                                        &this.review.connection_focus,
+                                                        cx,
+                                                    );
+                                                    cx.notify();
+                                                })),
+                                            ),
+                                    ),
+                            )
+                        })
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        col
+                    }
+                })
                 .child(div().flex().flex_wrap().gap_2()
                     .child(self.part("connect",div(),cx).child(review::starts_block()).child(self.button("github-connect","Connect GitHub CLI account","",false, cx).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx)))))
                     .child(self.part("sign-in-help",div(),cx).child(review::starts_block()).child(self.held_button("github-sign-in-help",copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx),cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into()))))
