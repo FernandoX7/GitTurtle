@@ -393,11 +393,36 @@ impl WaitEvents {
     }
 }
 
+/// Handle for a background child-exit watcher thread.
+///
+/// On non-Linux Unix (macOS/Darwin), the watcher polls non-blocking `waitid`
+/// with `WNOWAIT | WNOHANG` behind a condition variable instead of blocking in
+/// XNU's `waitid(..., WNOWAIT)` queue (which can miss wakeups under concurrent
+/// child spawning and leave `join()` blocked forever after an exited child
+/// times out). Calling [`Self::join`] signals the stop condition so teardown
+/// returns immediately without waiting for the backoff slice.
+pub(super) struct ExitWatchHandle {
+    helper: JoinHandle<()>,
+    #[cfg(all(unix, not(target_os = "linux")))]
+    stop: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl ExitWatchHandle {
+    pub(super) fn join(self) {
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            *self.stop.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            self.stop.1.notify_all();
+        }
+        let _ = self.helper.join();
+    }
+}
+
 /// Learns of a child's exit for one wait. Its report is a hint and never a
 /// status: the status is only ever taken with `Child::try_wait`, which cannot
 /// block, and a report that turns out false leaves the wait polling.
 pub(super) struct ExitWatcher {
-    helper: Option<JoinHandle<()>>,
+    helper: Option<ExitWatchHandle>,
     polling: bool,
 }
 
@@ -474,23 +499,56 @@ impl ExitWatcher {
     /// after its report, or after the child was killed.
     pub(super) fn join(&mut self) {
         if let Some(helper) = self.helper.take() {
-            let _ = helper.join();
+            helper.join();
         }
     }
 }
 
-/// Spawns a helper thread that blocks until `pid` has exited (without reaping
+#[cfg(any(all(unix, not(target_os = "linux")), all(test, unix)))]
+fn wait_exit_nonblocking(
+    pid: rustix::process::Pid,
+    stop: &(std::sync::Mutex<bool>, std::sync::Condvar),
+) {
+    use rustix::process::{WaitId, WaitIdOptions, waitid};
+    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
+    let mut delay = Duration::from_micros(100);
+    let max_delay = Duration::from_millis(5);
+    loop {
+        match waitid(WaitId::Pid(pid), peek) {
+            Ok(None) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Ok(Some(_)) | Err(_) => return,
+        }
+        let guard = stop.0.lock().unwrap_or_else(|e| e.into_inner());
+        if *guard {
+            return;
+        }
+        let (guard, _) = stop
+            .1
+            .wait_timeout(guard, delay)
+            .unwrap_or_else(|e| e.into_inner());
+        if *guard {
+            return;
+        }
+        delay = (delay * 2).min(max_delay);
+    }
+}
+
+/// Spawns a helper thread that waits until `pid` has exited (without reaping
 /// it) and then invokes `wake`. Returns `None` on non-Unix platforms or if the
 /// thread cannot start.
 #[cfg(unix)]
 pub(super) fn spawn_exit_watcher(
     pid: u32,
     wake: impl FnOnce() + Send + 'static,
-) -> Option<JoinHandle<()>> {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+) -> Option<ExitWatchHandle> {
+    use rustix::process::Pid;
     let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
-    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
-    thread::Builder::new()
+    #[cfg(not(target_os = "linux"))]
+    let stop = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    #[cfg(not(target_os = "linux"))]
+    let watcher_stop = Arc::clone(&stop);
+    let helper = thread::Builder::new()
         .name("git-exit".into())
         .spawn(move || {
             struct WakeGuard<F: FnOnce()>(Option<F>);
@@ -502,16 +560,28 @@ pub(super) fn spawn_exit_watcher(
                 }
             }
             let _guard = WakeGuard(Some(wake));
-            while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+            #[cfg(target_os = "linux")]
+            {
+                use rustix::process::{WaitId, WaitIdOptions, waitid};
+                let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+                while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+            }
+            #[cfg(not(target_os = "linux"))]
+            wait_exit_nonblocking(pid, &watcher_stop);
         })
-        .ok()
+        .ok()?;
+    Some(ExitWatchHandle {
+        helper,
+        #[cfg(not(target_os = "linux"))]
+        stop,
+    })
 }
 
 #[cfg(not(unix))]
 pub(super) fn spawn_exit_watcher(
     _pid: u32,
     _wake: impl FnOnce() + Send + 'static,
-) -> Option<JoinHandle<()>> {
+) -> Option<ExitWatchHandle> {
     None
 }
 
@@ -539,23 +609,38 @@ pub(super) fn child_has_exited(_pid: u32) -> bool {
     false
 }
 
-/// A thread that blocks until `pid`, a child of this process, has exited, and
+/// A thread that waits until `pid`, a child of this process, has exited, and
 /// leaves it unreaped. Whatever ends its wait (a status, no such child, any
 /// other error) is the same report: the child may have exited.
 #[cfg(unix)]
-fn watch_exit(pid: u32, signals: &WaitSignals) -> Option<JoinHandle<()>> {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+fn watch_exit(pid: u32, signals: &WaitSignals) -> Option<ExitWatchHandle> {
+    use rustix::process::Pid;
     let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
-    let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
-    signals
+    #[cfg(not(target_os = "linux"))]
+    let stop = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    #[cfg(not(target_os = "linux"))]
+    let watcher_stop = Arc::clone(&stop);
+    let helper = signals
         .start(WaitPart::Exit, move || {
-            while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+            #[cfg(target_os = "linux")]
+            {
+                use rustix::process::{WaitId, WaitIdOptions, waitid};
+                let peek = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+                while matches!(waitid(WaitId::Pid(pid), peek), Err(rustix::io::Errno::INTR)) {}
+            }
+            #[cfg(not(target_os = "linux"))]
+            wait_exit_nonblocking(pid, &watcher_stop);
         })
-        .ok()
+        .ok()?;
+    Some(ExitWatchHandle {
+        helper,
+        #[cfg(not(target_os = "linux"))]
+        stop,
+    })
 }
 
 #[cfg(not(unix))]
-fn watch_exit(_pid: u32, _signals: &WaitSignals) -> Option<JoinHandle<()>> {
+fn watch_exit(_pid: u32, _signals: &WaitSignals) -> Option<ExitWatchHandle> {
     None
 }
 
@@ -696,5 +781,36 @@ os._exit(0)
             Err(rustix::io::Errno::CHILD) => ChildState::Reaped,
             Err(error) => panic!("waitid({pid:?}): {error}"),
         }
+    }
+
+    #[test]
+    fn nonblocking_exit_watcher_detects_exit_without_reaping_and_honors_stop() {
+        use rustix::process::Pid;
+        use std::sync::{Condvar, Mutex};
+
+        // 1. Detects exit promptly without reaping the zombie.
+        let mut child = shell("sleep 0.02; exit 0").spawn().unwrap();
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let started = Instant::now();
+        wait_exit_nonblocking(pid, &stop);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(child_state(&child.id().to_string()), ChildState::Exited);
+        assert!(child.wait().unwrap().success());
+
+        // 2. Wakes immediately when stop is signaled while child is still running.
+        let mut running = shell("sleep 10").spawn().unwrap();
+        let running_pid = Pid::from_raw(i32::try_from(running.id()).unwrap()).unwrap();
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let watcher_stop = Arc::clone(&stop);
+        let handle = thread::spawn(move || wait_exit_nonblocking(running_pid, &watcher_stop));
+        thread::sleep(Duration::from_millis(10));
+        let stop_started = Instant::now();
+        *stop.0.lock().unwrap() = true;
+        stop.1.notify_all();
+        handle.join().unwrap();
+        assert!(stop_started.elapsed() < Duration::from_secs(1));
+        let _ = running.kill();
+        let _ = running.wait();
     }
 }
