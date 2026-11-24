@@ -3,16 +3,16 @@
 > Strictly `<= 60` lines (enforced by `scripts/check-agent-guidance.py`). Overwrite on task close; never append session logs here. Graduate durable lessons into `.agents/skills/` or `docs/decisions/`.
 
 - **Updated:** 2026-11-23
-- **Latest `main`:** `f74ca679` (PR `#254` binary size diet merged; Linux AArch64 release `142.94 MiB` → `106.77 MiB`, `-25.3%`; Quality green).
-- **Active branch / PR:** `wt/ergonomics-range-rebase` (Pre-1.0 Polish Wave PR 2 of 4) — Everyday ergonomics:
-  - Added Shift-click and `Shift+Up`/`Shift+Down` History commit range compare (`HistoryRange` on `RepositoryWorkspace`), wired passively through `Job::CompareRevisions` (`ComparisonMode::Endpoints`) with generation/OID validation, calm inspector header (`Comparing <old>..<new>`, commit count, `Swap`, `Clear`/`Esc`), Compare + Back range retention, search retention, and AccessKit row/header labels.
-  - Added native GPUI drag-to-reorder in Interactive Rebase (`RebaseForm`) with 2 px accented drop indicator, drag preview respecting reduced motion, live edge auto-scroll, Escape-to-cancel mid-drag without closing or mutating, and live `validate_steps` enforcement rejecting leading `Squash`/`Fixup` drops with an accessible inline notice.
-  - Added deterministic unit + `#[gpui::test]` suites (`history_range_tests.rs`, `interactive_rebase_drag_tests.rs`) and synced `docs/user-guide.md` and `docs/interactive-rebase.md`.
-- **Not exercised locally:** macOS ARM64 (`crates/app` compilation/UI) and Linux x86-64 are pending hosted `macos-15`/`macos-26` and `ubuntu-24.04` CI (locally verified on Linux AArch64 headless `#[gpui::test]`; physical Wayland/X11, macOS, VoiceOver, and Orca sessions remain owner-driven).
+- **Latest `main`:** `4382ed07` (PR `#254` binary size diet + PR `#255` Shift-click history range compare & interactive rebase drag-reorder merged; Linux AArch64 release `106.77 MiB`).
+- **Active branch / PR:** `wt/linux-ime-atspi-parity` (Pre-1.0 Polish Wave PR 3 of 4) — Linux IME & Orca/AT-SPI parity hardening:
+  - Extended vendored `accesskit_atspi_common` to emit `State::Expandable` + `State::Expanded` (with `StateChanged(Expanded)` updates), `State::Busy`, `"level"` object attributes, and `RelationType::LabelledBy`.
+  - Populated AccessKit root window bounds (`set_root_window_bounds`) and initial active focus state in vendored `gpui-pre-linux` (Wayland + X11), hardened `zwp_text_input_v3` double-buffered `Done` ordering, commit serial validation, clamped cursor rectangles, direct field-switch resets, non-editable Enter guard, and `HiddenText` password hint, and hardened X11 XIM parity (single reused IC, incremental `PreeditDraw`/`PreeditCaret`/`PreeditDone`, editable/non-password forwarding gate, clamped fractional-scale `SpotLocation`, and X11 `is_held` auto-repeat tracking).
+  - Fixed masked `bounds_for_range` bullet-offset mapping, unmasked password `on_focus`/`toggle_masked`/`set_masked` content-type syncing, secret `PRIMARY` suppression, and blur preedit unmarking in `gpui-base`; fixed `PopupMenu` label `aria_value`, keyboard active-descendant focus, menu label, and scrollable `Role::ScrollView` clipping in `gpui-component`.
+  - Fixed 0-based `position_in_set` + container `size_of_set` (History, Command Palette, Rewrite Review), wired `aria_active_descendant` on remaining composite listboxes, wired `LiveRegion` alerts/statuses, `clips_children` on remaining scrollable dialogs, `workspace_text` accessible value, `shortcuts::ENTER` parity, and extended `scripts/native_qa/a11y.py`.
+- **Not exercised locally:** macOS ARM64 (`crates/app` compilation/UI) and Linux x86-64 are pending hosted CI; live interactive Orca + `fcitx5`/`IBus` Wayland/X11 sessions and macOS VoiceOver remain owner-driven physical desktop checks.
 - **Next concrete steps:**
-  1. Finish PR 2 gates/reviews/hosted CI and squash-merge to `main`.
-  2. PR 3: Linux IME & Orca/AT-SPI accessibility parity hardening.
-  3. PR 4: Current-build end-to-end GUI benchmark refresh, docs/website sync, and local release install.
+  1. Wait for PR 3 hosted CI (Linux x86-64/ARM64/Arch + macOS 15/26) to pass 100% and squash-merge to `main`.
+  2. PR 4: Current-build end-to-end GUI benchmark refresh, docs/website sync, and final local release install.
 
 ## Deferred manual desktop checks (owner-driven)
 - `QA-146` interactive macOS/Linux visual sanity on passive/write readiness waits (#234/#235).

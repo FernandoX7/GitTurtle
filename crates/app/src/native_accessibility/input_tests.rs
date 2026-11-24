@@ -586,3 +586,53 @@ fn a_field_carries_its_accessible_description(cx: &mut TestAppContext) {
     assert_eq!(message.role(), Role::MultilineTextInput);
     assert_eq!(message.description(), Some("The first line is the subject"));
 }
+
+/// Opening a modal dialog while an IME composition is active in History's search
+/// field blurs that field and cleanly unmarks the composition with the caret at
+/// the composed text's end rather than leaving a stale preedit underline behind.
+#[gpui::test]
+fn opening_a_dialog_over_an_active_composition_unmarks_the_search_field(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler as _;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = crate::tags::tests::tagged_repository(fixture.path());
+    let (app, cx) = crate::tags::tests::window(cx, &repo);
+    let settle = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    cx.update(|window, _| window.activate_window());
+    settle(cx);
+
+    cx.update(|window, cx| {
+        let focus = app.read(cx).search.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    settle(cx);
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.search.update(cx, |search, cx| {
+                search.set_value("fix", window, cx);
+                search.replace_and_mark_text_in_range(None, "ing", Some(0..2), window, cx);
+            });
+        });
+    });
+    settle(cx);
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.open_command_palette(window, cx));
+    });
+    settle(cx);
+    settle(cx);
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.search.update(cx, |search, cx| {
+                assert_eq!(search.value(), "fixing");
+                assert_eq!(search.marked_text_range(window, cx), None);
+                assert_eq!(search.selected_range(), 6..6);
+            });
+        });
+    });
+}

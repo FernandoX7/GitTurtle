@@ -31,7 +31,14 @@ PROPERTIES = "org.freedesktop.DBus.Properties"
 # The states a focused-node reading reports, AT-SPI's StateType names in lower case. AccessKit reports a
 # Switch as a "toggle button" that is `pressed` while on, a Checkbox `checked`, and focus as `focused`.
 STATES = ("focused", "focusable", "enabled", "sensitive", "pressed", "checked", "checkable", "indeterminate",
-          "selected", "selectable", "expanded", "editable", "read_only", "showing", "visible", "active", "modal")
+          "selected", "selectable", "multiselectable", "expandable", "expanded", "busy", "editable",
+          "read_only", "showing", "visible", "active", "modal", "defunct")
+INTERACTIVE_ROLES = frozenset({
+    "push button", "button", "toggle button", "check box", "radio button",
+    "menu item", "check menu item", "radio menu item", "list item", "tree item",
+    "page tab", "entry", "text", "password text", "spin button", "combo box",
+    "slider", "link",
+})
 DEPTH = 64       # levels searched below the application
 NODES = 5000     # nodes read per search at most, so a huge tree cannot stall a launch
 WITHIN = 5.0     # seconds an `atspi_focus` step waits for the application and a focused node
@@ -154,9 +161,94 @@ def application_for(pid: int):
     return None
 
 
+def attributes_of(node) -> dict[str, str]:
+    """Object attributes exposed by AT-SPI (for example `posinset`, `setsize`, `level`), or {}."""
+    getter = getattr(node, "get_attributes", None)
+    if getter is None:
+        return {}
+    try:
+        raw = getter()
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def extents_of(node) -> dict[str, int] | None:
+    """Screen-coordinate bounding box via AT-SPI Component::get_extents, or None when unavailable."""
+    getter = getattr(node, "get_extents", None)
+    if getter is None:
+        return None
+    try:
+        atspi = portal._atspi()
+        coord = getattr(getattr(atspi, "CoordType", None), "SCREEN", 0)
+        rect = getter(coord)
+    except Exception:
+        return None
+    if rect is None or not all(hasattr(rect, attr) for attr in ("x", "y", "width", "height")):
+        return None
+    return dict(x=int(rect.x), y=int(rect.y), width=int(rect.width), height=int(rect.height))
+
+
 def describe(node, depth: int) -> dict:
-    return dict(name=node.get_name(), role=node.get_role_name(), states=portal.states_of(node, STATES),
+    info = dict(name=node.get_name() or "", role=node.get_role_name(), states=portal.states_of(node, STATES),
                 depth=depth)
+    attrs = attributes_of(node)
+    if attrs:
+        info["attributes"] = attrs
+    extents = extents_of(node)
+    if extents is not None:
+        info["extents"] = extents
+    return info
+
+
+def audit_tree(app) -> dict:
+    """Walk up to NODES/DEPTH of `app`'s AT-SPI tree and summarize health metrics for QA scripts."""
+    count, stack = 0, [(app, 0)]
+    unnamed_controls: list[dict] = []
+    defunct: list[dict] = []
+    focused: list[dict] = []
+    expandable = 0
+    busy = 0
+    truncated = False
+    while stack:
+        node, depth = stack.pop()
+        if count >= NODES:
+            truncated = True
+            break
+        count += 1
+        try:
+            info = describe(node, depth)
+            children = [node.get_child_at_index(i) for i in range(node.get_child_count())] if depth < DEPTH else []
+        except Exception:
+            continue
+        states = set(info["states"])
+        if "defunct" in states:
+            defunct.append(info)
+        if "focused" in states:
+            focused.append(info)
+        if "expandable" in states:
+            expandable += 1
+        if "busy" in states:
+            busy += 1
+        if info["role"] in INTERACTIVE_ROLES and not (info["name"] or "").strip():
+            unnamed_controls.append(info)
+        stack.extend((child, depth + 1) for child in reversed(children) if child is not None)
+    zero_extent_focused = [
+        node for node in focused
+        if "extents" in node and (node["extents"]["width"] <= 0 or node["extents"]["height"] <= 0)
+    ]
+    return dict(
+        nodes=count,
+        truncated=truncated,
+        focused=focused,
+        unnamed_controls=unnamed_controls,
+        defunct=defunct,
+        expandable=expandable,
+        busy=busy,
+        zero_extent_focused=zero_extent_focused,
+    )
 
 
 def focused_nodes(app) -> tuple[list[dict], int, bool]:

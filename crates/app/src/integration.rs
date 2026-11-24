@@ -408,11 +408,11 @@ impl GitTurtle {
                                 .child(Input::new(&good_input).aria_label("Good revision")),
                         )
                         .when_some(current_error, |col, err| {
+                            use crate::native_accessibility::LiveRegion as _;
                             col.child(
                                 div()
                                     .id("bisect-start-error")
-                                    .role(Role::Alert)
-                                    .aria_label(err.clone())
+                                    .alert(err.clone())
                                     .text_size(crate::appearance::ui_text(11.))
                                     .text_color(rgb(labels.warning))
                                     .child(err),

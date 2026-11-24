@@ -744,11 +744,13 @@ fn search_document_dialog_with_focus(
                             .id("pdf-search-status")
                             .role(Role::Status)
                             .aria_label(status.clone())
+                            .aria_value(status.clone())
+                            .live_region(gpui::accesskit::Live::Polite, searching)
                             .text_size(appearance::ui_text(11.))
                             .text_color(rgb(colors.muted))
                             .child(status),
                     )
-                    .child(results),
+                    .child(crate::native_accessibility::clips_children(results)),
             )
             .footer(DialogFooter::new().child(
                 crate::tags::dialog_cancel("close-pdf-search", "Close").on_click(

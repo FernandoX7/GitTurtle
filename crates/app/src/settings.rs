@@ -2329,11 +2329,11 @@ impl GitTurtle {
                                 }),
                         )
                         .when_some(current_error, |col, err| {
+                            use crate::native_accessibility::LiveRegion as _;
                             col.child(
                                 div()
                                     .id("custom-cmd-error")
-                                    .role(Role::Alert)
-                                    .aria_label(err.clone())
+                                    .alert(err.clone())
                                     .text_size(crate::appearance::ui_text(11.))
                                     .text_color(rgb(labels.warning))
                                     .child(err),
@@ -3184,7 +3184,7 @@ impl GitTurtle {
                         .absolute()
                         .size_full(),
                     )
-                    .child(
+                    .child(crate::native_accessibility::clips_children(
                         uniform_list(
                             "custom-theme-rows",
                             rows,
@@ -3224,7 +3224,7 @@ impl GitTurtle {
                         // its track so the thumb never covers Delete….
                         .when(scrolls, |list| list.pr(Scrollbar::width()))
                         .track_scroll(self.theme_editor.rows_scroll()),
-                    ),
+                    )),
             )
             .when(strips, |list| {
                 // Painted after the rows, over the ring's room at each end

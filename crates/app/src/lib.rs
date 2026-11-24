@@ -3162,47 +3162,53 @@ impl GitTurtle {
             let commit = commit.clone();
             let file = file.clone();
             let body = if commands.is_empty() {
-                div()
-                    .text_size(crate::appearance::ui_text(12.))
-                    .text_color(rgb(p.muted))
-                    .child("No custom commands configured. Add one in Settings → Custom commands.")
-                    .into_any_element()
+                native_accessibility::text(
+                    "run-custom-commands-empty",
+                    "No custom commands configured. Add one in Settings → Custom commands.",
+                )
+                .text_size(crate::appearance::ui_text(12.))
+                .text_color(rgb(p.muted))
+                .into_any_element()
             } else {
-                div()
-                    .id("run-custom-commands-list")
-                    .max_h(px(320.))
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .children(commands.iter().enumerate().map(|(ix, cmd)| {
-                        let cmd_run = cmd.clone();
-                        let owner = owner.clone();
-                        let branch = branch.clone();
-                        let commit = commit.clone();
-                        let file = file.clone();
-                        let summary = if cmd.args.is_empty() {
-                            cmd.program.clone()
-                        } else {
-                            format!("{} {}", cmd.program, cmd.args.join(" "))
-                        };
-                        let label = format!("{} — {summary}", cmd.name);
-                        let accessible = format!("Run custom command {}: {summary}", cmd.name);
-                        button(("custom-command-pick", ix), label, "", false)
-                            .w_full()
-                            .accessibility_label(accessible)
-                            .on_click(move |_, window, cx| {
-                                window.close_dialog(cx);
-                                let cmd = cmd_run.clone();
-                                let branch = branch.clone();
-                                let commit = commit.clone();
-                                let file = file.clone();
-                                let _ = owner.update(cx, |this, cx| {
-                                    this.run_custom_command(cmd, branch, commit, file, window, cx);
-                                });
-                            })
-                    }))
-                    .into_any_element()
+                native_accessibility::clips_children(
+                    div()
+                        .id("run-custom-commands-list")
+                        .max_h(px(320.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(commands.iter().enumerate().map(|(ix, cmd)| {
+                            let cmd_run = cmd.clone();
+                            let owner = owner.clone();
+                            let branch = branch.clone();
+                            let commit = commit.clone();
+                            let file = file.clone();
+                            let summary = if cmd.args.is_empty() {
+                                cmd.program.clone()
+                            } else {
+                                format!("{} {}", cmd.program, cmd.args.join(" "))
+                            };
+                            let label = format!("{} — {summary}", cmd.name);
+                            let accessible = format!("Run custom command {}: {summary}", cmd.name);
+                            button(("custom-command-pick", ix), label, "", false)
+                                .w_full()
+                                .accessibility_label(accessible)
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let cmd = cmd_run.clone();
+                                    let branch = branch.clone();
+                                    let commit = commit.clone();
+                                    let file = file.clone();
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.run_custom_command(
+                                            cmd, branch, commit, file, window, cx,
+                                        );
+                                    });
+                                })
+                        })),
+                )
+                .into_any_element()
             };
             dialog
                 .title("Run custom command")

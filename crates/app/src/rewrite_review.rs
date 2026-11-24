@@ -221,7 +221,13 @@ pub(crate) const SERIES_CONTEXT: &str = "RewriteSeries";
 
 /// The series list's accessible description while it lists a series: its
 /// keys.
-const SERIES_KEYS: &str = "Up and Down select a commit pair. Return inspects its rewritten files, or the original's where it has no rewritten commit.";
+fn series_keys() -> SharedString {
+    format!(
+        "Up and Down select a commit pair. {} inspects its rewritten files, or the original's where it has no rewritten commit.",
+        crate::shortcuts::ENTER
+    )
+    .into()
+}
 
 /// What the list's place says while the series is read.
 const READING: &str = "Reading captured local history…";
@@ -2343,8 +2349,7 @@ impl SeriesBrowser {
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .when(selected, |row| row.aria_active_descendant())
-            .aria_position_in_set(index + 1)
-            .aria_size_of_set(review.rows.len())
+            .aria_position_in_set(index)
             .aria_label(format!(
                 "{label}. {}. {}",
                 commit_labels[0].0, commit_labels[1].0
@@ -2541,7 +2546,7 @@ impl Render for SeriesBrowser {
                     list.on_children_prepainted(rows_cue.observe(move |_, _, _| {
                         rest.set(scroll.0.borrow().base_handle.offset().y);
                     }))
-                }).id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(|| SERIES_KEYS.into(), |empty| empty.description.clone()))
+                }).id("series-focus-list").debug_selector(|| "series-focus-list".into()).w_full().min_w_0().map(|list| if empty.is_some() { list.min_h(list_height) } else { list.h(list_height) }).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).key_context(SERIES_CONTEXT).role(if empty.is_some() { Role::Group } else { Role::ListBox }).when(empty.is_none(), |list| list.aria_size_of_set(row_count)).aria_label("Original and rewritten commits").aria_description(empty.as_ref().map_or_else(series_keys, |empty| empty.description.clone()))
                     // Return inspects as it goes down, never on a held key's
                     // repeats, as the dialog's own Enter acts. A key on Edit
                     // local commits… inside it is that Button's own.
@@ -2647,7 +2652,7 @@ impl Render for SeriesBrowser {
                 // from one file to the next: the row left as an image or
                 // document landed and came back with the next choice,
                 // moving the preview 34.5 px each way.
-                .when(self.messages.is_none(), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().map(|(mode, (label, key))| { let refused = if mode == 3 { diagrams_refused.clone() } else { modes_refused.clone() }; refusing(button(("series-text-mode", mode), label, "", drawn_mode == mode && refused.is_none()).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, refused) }))))
+                .when(self.messages.is_none(), |element| element.child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.body.controls(modes.iter().cloned().map(Some).collect(), room)).children(TEXT_MODES.into_iter().enumerate().map(|(mode, (label, key))| { let refused = if mode == 3 { diagrams_refused.clone() } else { modes_refused.clone() }; let active = drawn_mode == mode && refused.is_none(); refusing(button(("series-text-mode", mode), label, "", active).toggled(active).debug_selector(move || key.into()).track_focus(&modes[mode]).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); })), key, refused) }))))
                 // Built for the box's width in the frame it is drawn
                 // (`in_frame`), so the open controls take the form that
                 // width leaves them in the first frame after a resize.
@@ -2656,7 +2661,10 @@ impl Render for SeriesBrowser {
             // concerns; the load's own error says why in the list's place.
             // It keeps its height in the scrolling body, which shrank a
             // scrolling box with no least height of its own to nothing.
-            .when_some(self.error.as_ref().filter(|_| self.review.is_some()), |element, error| element.child(div().max_h(appearance::ui_size(100.)).flex_shrink_0().id("series-review-error").overflow_y_scroll().track_scroll(&self.error_scroll.handle).on_prepaint(self.error_scroll.observe()).on_scroll(self.error_scroll.wheel()).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))), "rewrite-review-scrollbar").min_h_0())
+            .when_some(self.error.as_ref().filter(|_| self.review.is_some()), |element, error| {
+                use native_accessibility::LiveRegion as _;
+                element.child(native_accessibility::clips_children(div().max_h(appearance::ui_size(100.)).flex_shrink_0().id("series-review-error").alert(error.clone()).overflow_y_scroll().track_scroll(&self.error_scroll.handle).on_prepaint(self.error_scroll.observe()).on_scroll(self.error_scroll.wheel()).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
+            }), "rewrite-review-scrollbar").min_h_0())
     }
 }
 

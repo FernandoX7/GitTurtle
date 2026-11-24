@@ -4566,9 +4566,27 @@ impl Render for LibraryView {
                 .children(self.session.library.clone().into_iter().enumerate().map(|(index,entry)|{
                     let path=entry.path.path();let remove=path.clone();
                     let identity=self.project_identity(&path);
-                    let label=format!("{}{}{}",if entry.pinned{"★ "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(" · {group}")));
-                    let accessible=format!("{}repository {}{}",if entry.pinned{"Pinned "}else{""},identity,entry.group.as_ref().map_or(String::new(),|group|format!(", workspace {group}")));
-                    div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible.clone()).flex_1().min_w_0().truncate().tooltip(move|window,cx|Tooltip::new(accessible.clone()).build(window,cx)))
+                    let label = gitturtle_core::strip_bidi_controls(&format!(
+                        "{}{}{}",
+                        if entry.pinned { "★ " } else { "" },
+                        identity,
+                        entry
+                            .group
+                            .as_ref()
+                            .map_or(String::new(), |group| format!(" · {group}"))
+                    ))
+                    .into_owned();
+                    let accessible = gitturtle_core::strip_bidi_controls(&format!(
+                        "{}repository {}{}",
+                        if entry.pinned { "Pinned " } else { "" },
+                        identity,
+                        entry
+                            .group
+                            .as_ref()
+                            .map_or(String::new(), |group| format!(", workspace {group}"))
+                    ))
+                    .into_owned();
+                    div().flex().items_center().gap_2().child(crate::native_accessibility::static_text(div().id(("local-workspace-repository", index)).debug_selector(move||format!("local-workspace-repository-{index}")).child(label), accessible.clone()).flex_1().min_w_0().truncate().tooltip(move|window,cx|Tooltip::new(accessible.clone()).build(window,cx)))
                         .child(button(("open-library-repo",index),"Open","",false).debug_selector(move||format!("open-library-repo-{index}")).accessibility_label(format!("Open repository {identity}")).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
                         .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {identity} from local library; keep its folder and drafts")).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
                 }))))

@@ -329,8 +329,18 @@ Launch tool lookup also includes `$XDG_DATA_HOME/omarchy/bin`.
 - **Linux clipboard, selection & IME:** Selecting non-masked text in inputs,
   editors, or split diffs populates Wayland/X11 `PRIMARY` selection on left
   mouse release, and middle-click pastes `PRIMARY` into editable inputs. Masked
-  password fields never write to `PRIMARY` and set Wayland
-  `zwp_text_input_v3` `ContentPurpose::Password` + `ContentHint::SensitiveData`.
+  and password fields never write to `PRIMARY`, map masked candidate bounds to
+  bullet offsets, set Wayland `zwp_text_input_v3` `ContentPurpose::Password` +
+  `ContentHint::SensitiveData | ContentHint::HiddenText`, and suspend X11 XIM
+  forwarding while active. Wayland `zwp_text_input_v3` buffers `PreeditString`,
+  `CommitString`, and `DeleteSurroundingText` until `Done`, validates commit
+  serials, clamps cursor rectangles to surface bounds, resets cleanly across
+  direct editable-field focus switches, and stays disabled outside editable
+  inputs (including read-only diffs). X11 XIM reuses a single negotiated input
+  context, supports incremental `PreeditDraw`/`PreeditCaret`/`PreeditDone`
+  updates and clamped fractional-scale `SpotLocation`, forwards keys only on
+  focused editable non-password fields, and tracks held keycodes for key
+  auto-repeat.
 - **Packaging preparation (local/unpublished):** Alongside the portable `.tar.gz`
   bundle (`scripts/package-linux.sh`) and Arch AUR recipe
   (`packaging/aur/gitturtle-bin/`), the repository includes local Debian/Ubuntu

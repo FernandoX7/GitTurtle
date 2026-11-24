@@ -175,8 +175,11 @@ class RequireModulesTest(unittest.TestCase):
 class Node:
     """An AT-SPI accessible with a process id, as the registry's applications report one."""
 
-    def __init__(self, name: str = "", role: str = "panel", states=(), children=(), pid: int | None = None) -> None:
+    def __init__(self, name: str = "", role: str = "panel", states=(), children=(), pid: int | None = None,
+                 attributes: dict[str, str] | None = None, extents=None) -> None:
         self.name, self.role, self.states, self.children, self.pid = name, role, set(states), list(children), pid
+        self.attributes = attributes
+        self.extents = extents
         self.cleared = 0
 
     def get_name(self) -> str:
@@ -193,6 +196,12 @@ class Node:
 
     def get_state_set(self):
         return SimpleNamespace(contains=lambda state: state in self.states)
+
+    def get_attributes(self):
+        return {} if self.attributes is None else dict(self.attributes)
+
+    def get_extents(self, _coord):
+        return self.extents
 
     def get_process_id(self) -> int:
         if self.pid is None:
@@ -276,6 +285,46 @@ class FocusTest(unittest.TestCase):
             found, count, truncated = a11y.focused_nodes(self.app)
         self.assertEqual((count, truncated), (3, True))
         self.assertEqual([n["name"] for n in found], ["GitTurtle"])
+
+    def test_describe_and_audit_report_new_states_attributes_and_extents(self) -> None:
+        tree_item = Node(
+            "Local branches",
+            "tree item",
+            states=("focused", "focusable", "expandable", "expanded", "showing", "visible"),
+            attributes={"level": "1", "posinset": "1", "setsize": "3"},
+            extents=SimpleNamespace(x=12, y=40, width=220, height=28),
+        )
+        busy_status = Node("Loading…", "status bar", states=("busy", "showing"))
+        unnamed_btn = Node("", "push button", states=("focusable", "enabled"))
+        unnamed_entry = Node(None, "entry", states=("focusable", "editable"))
+        defunct_node = Node("Old", "panel", states=("defunct",))
+        zero_focused = Node(
+            "Zero",
+            "list item",
+            states=("focused",),
+            extents=SimpleNamespace(x=0, y=0, width=0, height=0),
+        )
+        app = Node(
+            "GitTurtle",
+            "application",
+            pid=777,
+            children=[Node("GitTurtle", "frame", children=[tree_item, busy_status, unnamed_btn, unnamed_entry, defunct_node, zero_focused])],
+        )
+        summary = a11y.audit_tree(app)
+        self.assertEqual(summary["nodes"], 8)
+        self.assertFalse(summary["truncated"])
+        self.assertEqual(summary["expandable"], 1)
+        self.assertEqual(summary["busy"], 1)
+        self.assertEqual(len(summary["unnamed_controls"]), 2)
+        self.assertEqual([c["role"] for c in summary["unnamed_controls"]], ["push button", "entry"])
+        self.assertEqual(summary["unnamed_controls"][1]["name"], "")
+        self.assertEqual(len(summary["defunct"]), 1)
+        self.assertEqual(len(summary["zero_extent_focused"]), 1)
+        described = summary["focused"][0]
+        self.assertEqual(described["attributes"], {"level": "1", "posinset": "1", "setsize": "3"})
+        self.assertEqual(described["extents"], {"x": 12, "y": 40, "width": 220, "height": 28})
+        self.assertIn("expandable", described["states"])
+        self.assertIn("expanded", described["states"])
 
 
 if __name__ == "__main__":

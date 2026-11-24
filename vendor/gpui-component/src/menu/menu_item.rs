@@ -212,8 +212,15 @@ impl RenderOnce for MenuItemElement {
             .test_support()
             .role(role)
             .when_some(toggled, |this, toggled| this.aria_toggled(toggled))
-            .when_some(self.aria_label, |this, label| this.aria_label(label))
+            .when_some(self.aria_label, |this, label| {
+                if self.entry == Entry::Label {
+                    this.aria_value(label)
+                } else {
+                    this.aria_label(label)
+                }
+            })
             .when(item, |this| this.aria_selected(self.selected))
+            .when(cursor, |this| this.aria_active_descendant())
             .gap_x_1()
             .py_1()
             .px_2()
@@ -285,7 +292,12 @@ impl<E: Element + InteractiveElement> AccessibleMenuItem<E> {
         {
             let mut node = gpui::accesskit::Node::new(self.a11y_role().unwrap_or(Role::Unknown));
             self.write_a11y_info(&mut node);
-            if let Some(label) = node.label() {
+            let name = if node.role() == Role::Label {
+                node.value().or_else(|| node.label())
+            } else {
+                node.label()
+            };
+            if let Some(label) = name {
                 let selector = format!(
                     "menu-item: {label} · {:?}{}{}",
                     node.role(),

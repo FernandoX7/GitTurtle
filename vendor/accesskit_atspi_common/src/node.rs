@@ -385,6 +385,18 @@ impl NodeWrapper<'_> {
                 atspi_state.insert(State::Selected);
             }
         }
+        // GitTurtle patch (GITTURTLE-PATCH.md): expose Expandable/Expanded and Busy
+        // states so AT-SPI clients track disclosures, tree folders, and busy
+        // live regions, and emit `object:state-changed:expanded` / `:busy` on updates.
+        if let Some(expanded) = state.data().is_expanded() {
+            atspi_state.insert(State::Expandable);
+            if expanded {
+                atspi_state.insert(State::Expanded);
+            }
+        }
+        if state.is_busy() {
+            atspi_state.insert(State::Busy);
+        }
         if state.is_text_input() {
             atspi_state.insert(State::SelectableText);
             atspi_state.insert(match state.is_multiline() {
@@ -461,6 +473,10 @@ impl NodeWrapper<'_> {
         }
         if let Some(role_description) = self.braille_role_description() {
             attributes.insert("brailleroledescription", role_description.to_string());
+        }
+        // GitTurtle patch (GITTURTLE-PATCH.md): expose heading and tree-item levels.
+        if let Some(level) = self.0.level() {
+            attributes.insert("level", level.to_string());
         }
 
         attributes
@@ -970,10 +986,20 @@ impl PlatformNode {
                 .controls()
                 .filter(|controlled| filter(controlled) == FilterResult::Include)
                 .map(|controlled| controlled.id())
-                .map(f)
+                .map(&f)
                 .collect();
             if !controls.is_empty() {
                 relations.insert(RelationType::ControllerFor, controls);
+            }
+            // GitTurtle patch (GITTURTLE-PATCH.md): expose `RelationType::LabelledBy`
+            // for modal dialogs and labelled groups.
+            let labelled_by: Vec<_> = node
+                .labelled_by()
+                .filter(|target| filter(target) == FilterResult::Include)
+                .map(|target| f(target.id()))
+                .collect();
+            if !labelled_by.is_empty() {
+                relations.insert(RelationType::LabelledBy, labelled_by);
             }
             Ok(relations)
         })

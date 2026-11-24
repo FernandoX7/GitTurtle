@@ -763,11 +763,109 @@ enum FrameLoop {
 }
 
 pub(crate) struct WaylandWindow(pub WaylandWindowStatePtr);
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImeInput {
     InsertText(String),
-    SetMarkedText(String),
+    SetMarkedText(String, Option<std::ops::Range<usize>>),
+    DeleteSurroundingText {
+        before_bytes: u32,
+        after_bytes: u32,
+    },
     UnmarkText,
     DeleteText,
+}
+
+/// Converts a UTF-8 byte range `(cursor_begin, cursor_end)` from Wayland
+/// `zwp_text_input_v3::Event::PreeditString` into a UTF-16 code-unit range for
+/// GPUI's `PlatformInputHandler::replace_and_mark_text_in_range`.
+///
+/// Negative offsets (the protocol's `-1` hidden-cursor sentinel) return `None`.
+/// Out-of-bounds, inverted, or mid-UTF-8-codepoint offsets are clamped and
+/// snapped downward to valid UTF-8 character boundaries without panicking.
+pub(crate) fn utf8_byte_range_to_utf16(
+    text: &str,
+    cursor_begin: i32,
+    cursor_end: i32,
+) -> Option<std::ops::Range<usize>> {
+    if cursor_begin < 0 || cursor_end < 0 {
+        return None;
+    }
+    let len = text.len();
+    let begin = text.floor_char_boundary((cursor_begin as usize).min(len));
+    let end = text.floor_char_boundary((cursor_end as usize).min(len));
+    let (lo, hi) = if begin <= end {
+        (begin, end)
+    } else {
+        (end, begin)
+    };
+    let lo_utf16 = text[..lo].encode_utf16().count();
+    let hi_utf16 = lo_utf16 + text[lo..hi].encode_utf16().count();
+    Some(lo_utf16..hi_utf16)
+}
+
+/// Computes the UTF-16 deletion range for Wayland `delete_surrounding_text`
+/// given the text immediately before `sel_start_utf16` (`before_str`) and after
+/// `sel_end_utf16` (`after_str`), clamping and snapping byte lengths to valid
+/// UTF-8 character boundaries without panicking.
+pub(crate) fn delete_surrounding_utf16_range(
+    before_str: &str,
+    after_str: &str,
+    sel_start_utf16: usize,
+    sel_end_utf16: usize,
+    before_bytes: u32,
+    after_bytes: u32,
+) -> Option<std::ops::Range<usize>> {
+    if before_bytes == 0 && after_bytes == 0 {
+        return None;
+    }
+    let before_want = (before_bytes as usize).min(before_str.len());
+    let before_cut = before_str.ceil_char_boundary(before_str.len().saturating_sub(before_want));
+    let del_before_utf16 = before_str[before_cut..].encode_utf16().count();
+
+    let after_want = (after_bytes as usize).min(after_str.len());
+    let after_cut = after_str.floor_char_boundary(after_want);
+    let del_after_utf16 = after_str[..after_cut].encode_utf16().count();
+
+    if del_before_utf16 == 0 && del_after_utf16 == 0 {
+        return None;
+    }
+
+    let start = sel_start_utf16.saturating_sub(del_before_utf16);
+    let end = sel_end_utf16.saturating_add(del_after_utf16);
+    (start < end).then_some(start..end)
+}
+
+fn wayland_root_window_rect(size: Size<Pixels>, scale: f32) -> accesskit::Rect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale as f64
+    } else {
+        1.0
+    };
+    let width = f32::from(size.width);
+    let height = f32::from(size.height);
+    let width = if width.is_finite() && width > 0.0 {
+        width as f64 * scale
+    } else {
+        0.0
+    };
+    let height = if height.is_finite() && height > 0.0 {
+        height as f64 * scale
+    } else {
+        0.0
+    };
+    accesskit::Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: width,
+        y1: height,
+    }
+}
+
+fn sync_a11y_window_bounds(state: &mut WaylandWindowState) {
+    let rect = wayland_root_window_rect(state.bounds.size, state.scale);
+    if let Some(adapter) = state.accesskit_adapter.as_mut() {
+        adapter.set_root_window_bounds(rect, rect);
+    }
 }
 
 impl Drop for WaylandWindow {
@@ -964,8 +1062,8 @@ impl WaylandWindowStatePtr {
             signal_at,
             signal_source,
         });
-        self.update_ime_enabled();
         drop(callbacks);
+        self.update_ime_enabled();
 
         self.complete_frame();
     }
@@ -1067,30 +1165,50 @@ impl WaylandWindowStatePtr {
         self.schedule_frame();
     }
 
-    fn update_ime_enabled(&self) {
+    pub(crate) fn accepts_text_input_and_focus(&self) -> (bool, Option<gpui::FocusId>) {
         let mut state = self.state.borrow_mut();
+        if let Some(mut input_handler) = state.input_handler.take() {
+            drop(state);
+            let accepts = input_handler.query_accepts_text_input();
+            let focus_id = input_handler.focus_id();
+            self.state.borrow_mut().input_handler = Some(input_handler);
+            (accepts, focus_id)
+        } else {
+            (false, None)
+        }
+    }
+
+    pub(crate) fn logical_size(&self) -> Size<Pixels> {
+        self.state.borrow().bounds.size
+    }
+
+    fn update_ime_enabled(&self) {
+        let state = self.state.borrow();
         if !state.active {
             return;
         }
         let client = state.client.clone();
-        let ime_enabled = if let Some(mut input_handler) = state.input_handler.take() {
-            drop(state);
-            let accepts_text_input = input_handler.query_accepts_text_input();
-            self.state.borrow_mut().input_handler = Some(input_handler);
-            accepts_text_input
-        } else {
-            drop(state);
-            false
-        };
-        if Some(ime_enabled) == client.ime_enabled() {
+        drop(state);
+        let (ime_enabled, focus_id) = self.accepts_text_input_and_focus();
+        let (current_enabled, current_focus_id) = client.ime_state();
+
+        if !ime_enabled {
+            client.clear_ime_password();
+            if current_enabled != Some(false) {
+                client.disable_ime();
+            }
             return;
         }
 
-        if ime_enabled {
-            client.enable_ime();
-        } else {
-            client.clear_ime_password();
+        if current_enabled != Some(true) {
+            client.enable_ime(focus_id);
+        } else if current_focus_id != focus_id {
+            // Per `text-input-unstable-v3`, switching directly between two
+            // editable inputs within the same surface must re-enable text input
+            // so the IME resets any active preedit and applies the new field's
+            // content type cleanly.
             client.disable_ime();
+            client.enable_ime(focus_id);
         }
     }
 
@@ -1486,8 +1604,48 @@ impl WaylandWindowStatePtr {
                 ImeInput::InsertText(text) => {
                     input_handler.replace_text_in_range(None, &text);
                 }
-                ImeInput::SetMarkedText(text) => {
-                    input_handler.replace_and_mark_text_in_range(None, &text, None);
+                ImeInput::SetMarkedText(text, selected_range) => {
+                    input_handler.replace_and_mark_text_in_range(None, &text, selected_range);
+                }
+                ImeInput::DeleteSurroundingText {
+                    before_bytes,
+                    after_bytes,
+                } => {
+                    const MAX_SURROUNDING_BYTES: u32 = 4096;
+                    let before_cap = before_bytes.min(MAX_SURROUNDING_BYTES);
+                    let after_cap = after_bytes.min(MAX_SURROUNDING_BYTES);
+                    if let Some(selection) = input_handler.selected_text_range(true) {
+                        let sel_start = selection.range.start;
+                        let sel_end = selection.range.end;
+                        let before_probe = sel_start.saturating_sub(before_cap as usize);
+                        let mut adjusted_before = None;
+                        let before_str = if before_cap > 0 && before_probe < sel_start {
+                            input_handler
+                                .text_for_range(before_probe..sel_start, &mut adjusted_before)
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let after_probe = sel_end.saturating_add(after_cap as usize);
+                        let mut adjusted_after = None;
+                        let after_str = if after_cap > 0 {
+                            input_handler
+                                .text_for_range(sel_end..after_probe, &mut adjusted_after)
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        if let Some(range) = delete_surrounding_utf16_range(
+                            &before_str,
+                            &after_str,
+                            sel_start,
+                            sel_end,
+                            before_cap,
+                            after_cap,
+                        ) {
+                            input_handler.replace_text_in_range(Some(range), "");
+                        }
+                    }
                 }
                 ImeInput::UnmarkText => {
                     input_handler.unmark_text();
@@ -1540,10 +1698,11 @@ impl WaylandWindowStatePtr {
             self.callbacks.borrow_mut().resize = Some(fun);
         }
 
-        let state = self.state.borrow_mut();
+        let mut state = self.state.borrow_mut();
         if let Some(viewport) = &state.viewport {
             viewport.set_destination(f32::from(size.width) as i32, f32::from(size.height) as i32);
         }
+        sync_a11y_window_bounds(&mut state);
         update_window(state);
     }
 
@@ -2262,10 +2421,16 @@ impl PlatformWindow for WaylandWindow {
             callback: callbacks.deactivation,
         };
 
-        let adapter =
+        let mut adapter =
             accesskit_unix::Adapter::new(activation_handler, action_handler, deactivation_handler);
 
-        self.borrow_mut().accesskit_adapter = Some(adapter);
+        let mut state = self.borrow_mut();
+        let rect = wayland_root_window_rect(state.bounds.size, state.scale);
+        adapter.set_root_window_bounds(rect, rect);
+        if state.active {
+            adapter.update_window_focus_state(true);
+        }
+        state.accesskit_adapter = Some(adapter);
     }
 
     fn a11y_tree_update(&self, tree_update: accesskit::TreeUpdate) {
@@ -2276,7 +2441,8 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn a11y_update_window_bounds(&self) {
-        // Wayland doesn't expose window position, so this is a no-op
+        let mut state = self.borrow_mut();
+        sync_a11y_window_bounds(&mut state);
     }
 }
 
