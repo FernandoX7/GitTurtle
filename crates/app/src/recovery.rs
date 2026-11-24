@@ -2448,15 +2448,19 @@ fn form_line(
 }
 
 fn form_error(error: &str, cx: &App) -> AnyElement {
-    div()
-        .id("recovery-form-error")
-        .debug_selector(|| "recovery-form-error".into())
-        .max_h(px(130.))
-        .overflow_y_scroll()
-        .text_size(crate::appearance::ui_text(12.))
-        .text_color(rgb(palette(cx).warning))
-        .child(error.to_owned())
-        .into_any_element()
+    use native_accessibility::LiveRegion as _;
+    native_accessibility::clips_children(
+        div()
+            .id("recovery-form-error")
+            .debug_selector(|| "recovery-form-error".into())
+            .alert(error.to_owned())
+            .max_h(px(130.))
+            .overflow_y_scroll()
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(palette(cx).warning))
+            .child(error.to_owned()),
+    )
+    .into_any_element()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4187,11 +4191,11 @@ impl StashBrowser {
                                 .child(Input::new(&branch_input).aria_label("New branch name")),
                         )
                         .when_some(current_error, |col, err| {
+                            use native_accessibility::LiveRegion as _;
                             col.child(
                                 div()
                                     .id("stash-branch-error")
-                                    .role(Role::Alert)
-                                    .aria_label(err.clone())
+                                    .alert(err.clone())
                                     .text_size(crate::appearance::ui_text(11.))
                                     .text_color(rgb(labels.warning))
                                     .child(err),
@@ -4278,6 +4282,7 @@ impl StashBrowser {
                 .debug_selector(move || format!("saved-stash-row-{index}"))
                 .role(Role::ListBoxOption)
                 .aria_selected(selected)
+                .when(selected, |row| row.aria_active_descendant())
                 .aria_label(stash_row_name(stash))
                 .h(crate::appearance::ui_size(58.))
                 .w_full()
@@ -4374,6 +4379,7 @@ impl StashBrowser {
             .debug_selector(move || format!("stash-file-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(selected)
+            .when(selected, |row| row.aria_active_descendant())
             .aria_label(format!("{} · {}", self.area.label(), file.path().display()))
             .h(crate::appearance::ui_size(28.))
             .w_full()
@@ -5292,7 +5298,7 @@ impl Render for StashBrowser {
                         .child({ use gpui_kit::base::ElementExt as _; let size = crate::appearance::ui_text(14.); div().min_w_0().text_size(size).font_weight(FontWeight::SEMIBOLD).on_prepaint(measure_message(&self.messages_laid_out, MessageLine::Title, snapshot.stash.name.clone(), size)).child(native_accessibility::text("stash-detail-name", snapshot.stash.name.clone()).truncate().tooltip(message_tooltip(&self.messages_laid_out, MessageLine::Title))) })
                         .child(native_accessibility::text("stash-detail-identity", format!("{} · {} · base {} · saved index {}", snapshot.stash.selector, short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid))).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
                     .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
-                        button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
+                        button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).toggled(self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
                     // The saved files, one Tab stop with the arrow keys
                     // inside. They are no taller than the detail's view holds
@@ -5313,7 +5319,7 @@ impl Render for StashBrowser {
                         .when(!self.files().is_empty(), |element| element.child(files))
                         .when(self.files().is_empty(), |element| element.child(native_accessibility::text("stash-files-empty", "No saved files in this group.").p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))))))
                     .child(div().flex().items_center().gap_1().on_children_prepainted(self.detail.controls(mode_focus, room)).children(modes.into_iter().map(|(mode, label, focus)| {
-                        button(("stash-text-mode", mode), label, "", self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
+                        button(("stash-text-mode", mode), label, "", self.text_mode == mode).toggled(self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
                     .child(div().debug_selector(|| "stash-comparison".into()).when(file_chosen, |element| element.flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR))).when(!file_chosen, |element| element.flex_grow(1.).flex_shrink_0()).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room))
                         // A chosen file's comparison is built for the box's

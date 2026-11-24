@@ -1354,7 +1354,7 @@ struct HistoryStream {
     child: Child,
     pipes: PipeControl,
     channel: Arc<StreamChannel>,
-    exit_watcher: Option<JoinHandle<()>>,
+    exit_watcher: Option<process_io::ExitWatchHandle>,
     readers: Vec<JoinHandle<()>>,
     writer: Option<JoinHandle<std::io::Result<()>>>,
     chunk: Vec<u8>,
@@ -1375,10 +1375,8 @@ impl HistoryStream {
         } else {
             Stdio::null()
         });
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = process_io::spawn_child(&mut command)
             .context("Unable to start Git history traversal")?;
         let pipes = ChildPipes::take(&mut child)?;
         let channel = StreamChannel::new(input.is_some());
@@ -1541,7 +1539,7 @@ impl HistoryStream {
                     "Git history error output exceeded its limit"
                 );
                 if let Some(watcher) = self.exit_watcher.take() {
-                    let _ = watcher.join();
+                    watcher.join();
                     poll_exit = true;
                 }
                 if let Some(status) = self.child.try_wait()? {
@@ -1605,11 +1603,11 @@ impl Drop for HistoryStream {
             terminate_process_group(&self.child);
             let _ = self.child.kill();
             if let Some(watcher) = self.exit_watcher.take() {
-                let _ = watcher.join();
+                watcher.join();
             }
             let _ = self.child.wait();
         } else if let Some(watcher) = self.exit_watcher.take() {
-            let _ = watcher.join();
+            watcher.join();
         }
         for reader in self.readers.drain(..) {
             let _ = reader.join();
@@ -1680,11 +1678,9 @@ pub(super) fn stream_history(
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Unable to start Git history read")?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child =
+        process_io::spawn_child(&mut command).context("Unable to start Git history read")?;
     let pipes = ChildPipes::take(&mut child)?;
     let channel = StreamChannel::new(input.is_some());
     let input_writer = input.map(|bytes| {
@@ -1739,7 +1735,7 @@ pub(super) fn stream_history(
             }
         }
     });
-    let mut exit_watcher: Option<JoinHandle<()>> = None;
+    let mut exit_watcher: Option<process_io::ExitWatchHandle> = None;
     let wake_ch = Arc::clone(&channel);
     let _cancel = cancellation.on_cancel(move || wake_ch.wake_reader());
     let start = Instant::now();
@@ -1763,7 +1759,7 @@ pub(super) fn stream_history(
                         if exit_ready || process_io::child_has_exited(child.id()) {
                             terminate_process_group(&child);
                             if let Some(watcher) = exit_watcher.take() {
-                                let _ = watcher.join();
+                                watcher.join();
                             }
                             let found = child.try_wait()?;
                             reaped |= found.is_some();
@@ -1802,7 +1798,7 @@ pub(super) fn stream_history(
                 );
                 if status.is_none() {
                     if let Some(watcher) = exit_watcher.take() {
-                        let _ = watcher.join();
+                        watcher.join();
                         poll_exit = true;
                     }
                     status = child.try_wait()?;
@@ -1854,11 +1850,11 @@ pub(super) fn stream_history(
         terminate_process_group(&child);
         let _ = child.kill();
         if let Some(watcher) = exit_watcher.take() {
-            let _ = watcher.join();
+            watcher.join();
         }
         let _ = child.wait();
     } else if let Some(watcher) = exit_watcher.take() {
-        let _ = watcher.join();
+        watcher.join();
     }
     let _ = output_reader.join();
     let _ = error_reader.join();

@@ -2765,6 +2765,7 @@ impl GitTurtle {
             .debug_selector(move || format!("file-revision-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(active)
+            .when(active, |row| row.aria_active_descendant())
             .aria_label(format!("{subject} · {detail}"))
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .h(crate::appearance::ui_size(68.))

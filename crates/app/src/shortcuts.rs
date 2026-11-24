@@ -582,7 +582,7 @@ pub(super) fn action(id: ShortcutId) -> Option<Box<dyn Action>> {
 }
 
 /// The Enter key as prose names it: Mac keyboards label it Return.
-pub(super) const ENTER: &str = if cfg!(target_os = "macos") {
+pub(crate) const ENTER: &str = if cfg!(target_os = "macos") {
     "Return"
 } else {
     "Enter"

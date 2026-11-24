@@ -104,7 +104,7 @@ use crate::linux::{
 use gpui::{
     AnyWindowHandle, Bounds, Capslock, CursorStyle, DevicePixels, ExternalDragPayload,
     FileDragPaths, FileDropEvent, ForegroundExecutor, GraphicalEnvironment, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    KeyUpEvent, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
     PlatformFrameSignal, PlatformInput, PlatformKeyboardLayout, PlatformWindow, Point, ScrollDelta,
     ScrollEvent, ScrollSource, SharedString, Size, TouchPhase, WindowButtonLayout, WindowKind,
@@ -131,13 +131,102 @@ struct ImeCursorRectangle {
 
 impl From<Bounds<Pixels>> for ImeCursorRectangle {
     fn from(bounds: Bounds<Pixels>) -> Self {
+        Self::from_bounds(bounds, None)
+    }
+}
+
+impl ImeCursorRectangle {
+    /// Converts GPUI logical bounds to Wayland surface-local logical integers,
+    /// guarding non-finite values, clamping origins into `[0, surface_size]`,
+    /// and enforcing minimum `1 × 1` rectangle dimensions.
+    fn from_bounds(bounds: Bounds<Pixels>, surface_size: Option<Size<Pixels>>) -> Self {
+        let floor_nonneg = |v: f32| -> i32 {
+            if v.is_finite() {
+                v.floor().max(0.0).min(i32::MAX as f32) as i32
+            } else {
+                0
+            }
+        };
+        let mut x = floor_nonneg(bounds.origin.x.as_f32());
+        let mut y = floor_nonneg(bounds.origin.y.as_f32());
+        let mut width = floor_nonneg(bounds.size.width.as_f32()).max(1);
+        let mut height = floor_nonneg(bounds.size.height.as_f32()).max(1);
+        if let Some(surface) = surface_size {
+            let max_w = floor_nonneg(surface.width.as_f32()).max(1);
+            let max_h = floor_nonneg(surface.height.as_f32()).max(1);
+            x = x.clamp(0, max_w.saturating_sub(1));
+            y = y.clamp(0, max_h.saturating_sub(1));
+            width = width.min(max_w.saturating_sub(x).max(1));
+            height = height.min(max_h.saturating_sub(y).max(1));
+        }
         Self {
-            x: bounds.origin.x.as_f32() as i32,
-            y: bounds.origin.y.as_f32() as i32,
-            width: bounds.size.width.as_f32() as i32,
-            height: bounds.size.height.as_f32() as i32,
+            x,
+            y,
+            width,
+            height,
         }
     }
+}
+
+/// Double-buffered Wayland `zwp_text_input_v3` events accumulated until `Done`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WaylandPendingTextInput {
+    preedit: Option<Option<(String, i32, i32)>>,
+    commit: Option<Option<String>>,
+    delete_surrounding: Option<(u32, u32)>,
+}
+
+/// Applies buffered `zwp_text_input_v3` events in strict protocol order on `Done`:
+/// 1. Clear any existing preedit string (`DeleteText`) when `delete_surrounding_text`
+///    will run or when neither `commit_string` nor `preedit_string` replaces it
+///    (in-place `InsertText` / `SetMarkedText` atomically replace the active marked
+///    range without splitting undo transactions or emitting spurious intermediate
+///    change events)
+/// 2. Apply `delete_surrounding_text`
+/// 3. Apply non-empty `commit_string`
+/// 4. Apply non-empty `preedit_string` with UTF-16 cursor selection
+///
+/// Returns the ordered `ImeInput` operations and the updated `composing` flag.
+fn plan_wayland_done_actions(
+    pending: WaylandPendingTextInput,
+    was_composing: bool,
+) -> (Vec<ImeInput>, bool) {
+    let delete_surrounding = pending
+        .delete_surrounding
+        .filter(|&(before, after)| before > 0 || after > 0);
+    let commit_text = pending.commit.flatten().filter(|text| !text.is_empty());
+    let preedit = pending
+        .preedit
+        .flatten()
+        .filter(|(text, _, _)| !text.is_empty());
+
+    let mut actions = Vec::new();
+    if was_composing
+        && (delete_surrounding.is_some() || (commit_text.is_none() && preedit.is_none()))
+    {
+        actions.push(ImeInput::DeleteText);
+    }
+    if let Some((before_bytes, after_bytes)) = delete_surrounding {
+        actions.push(ImeInput::DeleteSurroundingText {
+            before_bytes,
+            after_bytes,
+        });
+    }
+    if let Some(commit_text) = commit_text {
+        actions.push(ImeInput::InsertText(commit_text));
+    }
+    let now_composing = if let Some((preedit_text, cursor_begin, cursor_end)) = preedit {
+        let selected = crate::linux::wayland::window::utf8_byte_range_to_utf16(
+            &preedit_text,
+            cursor_begin,
+            cursor_end,
+        );
+        actions.push(ImeInput::SetMarkedText(preedit_text, selected));
+        true
+    } else {
+        false
+    };
+    (actions, now_composing)
 }
 
 trait ImeCursorRectangleSink {
@@ -167,31 +256,51 @@ fn set_ime_cursor_rectangle(
     );
 }
 
+#[cfg(test)]
 fn update_ime_cursor_rectangle(
     text_input: &impl ImeCursorRectangleSink,
     last_ime_cursor_rectangle: &mut Option<ImeCursorRectangle>,
     bounds: Bounds<Pixels>,
-) {
-    let cursor_rectangle = ImeCursorRectangle::from(bounds);
+) -> bool {
+    update_ime_cursor_rectangle_clamped(text_input, last_ime_cursor_rectangle, bounds, None)
+}
+
+fn update_ime_cursor_rectangle_clamped(
+    text_input: &impl ImeCursorRectangleSink,
+    last_ime_cursor_rectangle: &mut Option<ImeCursorRectangle>,
+    bounds: Bounds<Pixels>,
+    surface_size: Option<Size<Pixels>>,
+) -> bool {
+    let cursor_rectangle = ImeCursorRectangle::from_bounds(bounds, surface_size);
     if *last_ime_cursor_rectangle == Some(cursor_rectangle) {
-        return;
+        return false;
     }
 
     *last_ime_cursor_rectangle = Some(cursor_rectangle);
     set_ime_cursor_rectangle(text_input, cursor_rectangle);
     text_input.commit_ime_state();
+    true
 }
 
 fn set_ime_cursor_rectangle_after_done(
     text_input: &impl ImeCursorRectangleSink,
     last_ime_cursor_rectangle: &mut Option<ImeCursorRectangle>,
     bounds: Bounds<Pixels>,
-    should_commit: bool,
-) {
-    if should_commit {
-        update_ime_cursor_rectangle(text_input, last_ime_cursor_rectangle, bounds);
+    surface_size: Option<Size<Pixels>>,
+    serial_matches: bool,
+) -> bool {
+    // Per `zwp_text_input_v3`, when `done.serial` does not match our latest
+    // outgoing `commit()` serial, we must not touch pending `text_input` state
+    // or issue a commit in response to the stale event.
+    if serial_matches {
+        update_ime_cursor_rectangle_clamped(
+            text_input,
+            last_ime_cursor_rectangle,
+            bounds,
+            surface_size,
+        )
     } else {
-        set_ime_cursor_rectangle(text_input, ImeCursorRectangle::from(bounds));
+        false
     }
 }
 
@@ -371,8 +480,10 @@ pub(crate) struct WaylandClientState {
     data_device: Option<wl_data_device::WlDataDevice>,
     primary_selection: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
+    text_input_entered: bool,
+    text_input_commit_serial: u32,
+    pending_text_input: WaylandPendingTextInput,
     pre_edit_text: Option<String>,
-    ime_pre_edit: Option<String>,
     composing: bool,
     last_ime_cursor_rectangle: Option<ImeCursorRectangle>,
     // Surface to Window mapping
@@ -419,6 +530,7 @@ pub(crate) struct WaylandClientState {
     registrations: Vec<RegistrationToken>,
     pub common: Rc<RefCell<LinuxCommon>>,
     ime_enabled: Option<bool>,
+    ime_focus_id: Option<gpui::FocusId>,
     ime_password: bool,
 }
 
@@ -429,18 +541,31 @@ thread_local! {
 
 fn ime_content_type(password: bool) -> (ContentHint, ContentPurpose) {
     if password {
-        (ContentHint::SensitiveData, ContentPurpose::Password)
+        (
+            ContentHint::SensitiveData | ContentHint::HiddenText,
+            ContentPurpose::Password,
+        )
     } else {
         (ContentHint::None, ContentPurpose::Normal)
     }
 }
 
 trait ImeContentTypeSink {
+    fn disable_ime_content(&self);
+    fn enable_ime_content(&self);
     fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose);
     fn commit_ime_content_type(&self);
 }
 
 impl ImeContentTypeSink for zwp_text_input_v3::ZwpTextInputV3 {
+    fn disable_ime_content(&self) {
+        self.disable();
+    }
+
+    fn enable_ime_content(&self) {
+        self.enable();
+    }
+
     fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
         self.set_content_type(hint, purpose);
     }
@@ -450,23 +575,33 @@ impl ImeContentTypeSink for zwp_text_input_v3::ZwpTextInputV3 {
     }
 }
 
+/// Applies a password/normal content-type transition. Per `text-input-unstable-v3`,
+/// changing `content_type` while already enabled without a `disable`+`enable`
+/// cycle may be ignored by spec-compliant compositors; cycle disable/enable and
+/// return how many `commit()` requests were issued so the caller's serial stays
+/// synchronized.
 fn apply_ime_password_change(
     text_input: Option<&impl ImeContentTypeSink>,
     ime_enabled: Option<bool>,
     ime_password: &mut bool,
     password: bool,
-) {
+) -> u32 {
     if *ime_password == password {
-        return;
+        return 0;
     }
     *ime_password = password;
     if ime_enabled == Some(true)
         && let Some(text_input) = text_input
     {
         let (hint, purpose) = ime_content_type(password);
+        text_input.disable_ime_content();
+        text_input.commit_ime_content_type();
+        text_input.enable_ime_content();
         text_input.set_ime_content_type(hint, purpose);
         text_input.commit_ime_content_type();
+        return 2;
     }
+    0
 }
 
 pub(crate) fn set_wayland_ime_password(password: bool) {
@@ -475,14 +610,24 @@ pub(crate) fn set_wayland_ime_password(password: bool) {
         return;
     };
     let mut state = client.borrow_mut();
-    let ime_enabled = state.ime_enabled;
+    let ime_enabled = if state.text_input_entered {
+        state.ime_enabled
+    } else {
+        Some(false)
+    };
     let text_input = state.text_input.clone();
-    apply_ime_password_change(
+    let commits = apply_ime_password_change(
         text_input.as_ref(),
         ime_enabled,
         &mut state.ime_password,
         password,
     );
+    if commits > 0 {
+        state.text_input_commit_serial = state.text_input_commit_serial.wrapping_add(commits);
+        state.last_ime_cursor_rectangle = None;
+        state.composing = false;
+        state.pending_text_input = WaylandPendingTextInput::default();
+    }
 }
 
 pub(crate) fn activate_wayland_window_with_token(token: String) -> bool {
@@ -812,41 +957,63 @@ impl WaylandClientStatePtr {
         true
     }
 
-    pub fn enable_ime(&self) {
+    pub fn enable_ime(&self, focus_id: Option<gpui::FocusId>) {
         let client = self.get_client();
-        let mut state = client.borrow_mut();
-        state.ime_enabled = Some(true);
-        state.last_ime_cursor_rectangle = None;
-        let Some(text_input) = state.text_input.take() else {
-            return;
+        let focused_window = {
+            let mut state = client.borrow_mut();
+            state.ime_enabled = Some(true);
+            state.ime_focus_id = focus_id;
+            state.last_ime_cursor_rectangle = None;
+            if !state.text_input_entered || state.text_input.is_none() {
+                return;
+            }
+            state.keyboard_focused_window.clone()
         };
 
+        // Query GPUI candidate bounds outside the `state` borrow and before
+        // queuing any protocol requests so flushed effects cannot observe a
+        // half-open transaction or a taken `text_input`.
+        let cursor_rectangle = focused_window.and_then(|window| {
+            let surface_size = window.logical_size();
+            let area = window.get_ime_area()?;
+            Some(ImeCursorRectangle::from_bounds(area, Some(surface_size)))
+        });
+
+        let mut state = client.borrow_mut();
+        if !state.text_input_entered
+            || state.ime_enabled != Some(true)
+            || state.ime_focus_id != focus_id
+        {
+            return;
+        }
+        let Some(text_input) = state.text_input.as_ref() else {
+            return;
+        };
         text_input.enable();
         let (hint, purpose) = ime_content_type(state.ime_password);
         text_input.set_content_type(hint, purpose);
-        let mut cursor_rectangle = None;
-        if let Some(window) = state.keyboard_focused_window.clone() {
-            drop(state);
-            if let Some(area) = window.get_ime_area() {
-                let area = ImeCursorRectangle::from(area);
-                set_ime_cursor_rectangle(&text_input, area);
-                cursor_rectangle = Some(area);
-            }
-            state = client.borrow_mut();
+        if let Some(area) = cursor_rectangle {
+            set_ime_cursor_rectangle(text_input, area);
         }
         text_input.commit();
+        state.text_input_commit_serial = state.text_input_commit_serial.wrapping_add(1);
         state.last_ime_cursor_rectangle = cursor_rectangle;
-        state.text_input = Some(text_input);
     }
 
     pub fn disable_ime(&self) {
         let client = self.get_client();
         let mut state = client.borrow_mut();
         state.ime_enabled = Some(false);
+        state.ime_focus_id = None;
         state.composing = false;
-        if let Some(text_input) = &state.text_input {
+        state.pending_text_input = WaylandPendingTextInput::default();
+        state.last_ime_cursor_rectangle = None;
+        if state.text_input_entered
+            && let Some(text_input) = &state.text_input
+        {
             text_input.disable();
             text_input.commit();
+            state.text_input_commit_serial = state.text_input_commit_serial.wrapping_add(1);
         }
     }
 
@@ -855,21 +1022,36 @@ impl WaylandClientStatePtr {
         client.borrow_mut().ime_password = false;
     }
 
-    pub fn ime_enabled(&self) -> Option<bool> {
+    pub fn ime_state(&self) -> (Option<bool>, Option<gpui::FocusId>) {
         let client = self.get_client();
-        client.borrow().ime_enabled
+        let state = client.borrow();
+        (state.ime_enabled, state.ime_focus_id)
     }
 
     pub fn update_ime_position(&self, bounds: Bounds<Pixels>) {
         let client = self.get_client();
         let mut state = client.borrow_mut();
-        if state.pre_edit_text.is_some() {
+        if state.pre_edit_text.is_some()
+            || state.ime_enabled != Some(true)
+            || !state.text_input_entered
+        {
             return;
         }
+        let surface_size = state
+            .keyboard_focused_window
+            .as_ref()
+            .map(WaylandWindowStatePtr::logical_size);
         let Some(text_input) = state.text_input.clone() else {
             return;
         };
-        update_ime_cursor_rectangle(&text_input, &mut state.last_ime_cursor_rectangle, bounds);
+        if update_ime_cursor_rectangle_clamped(
+            &text_input,
+            &mut state.last_ime_cursor_rectangle,
+            bounds,
+            surface_size,
+        ) {
+            state.text_input_commit_serial = state.text_input_commit_serial.wrapping_add(1);
+        }
     }
 
     pub fn handle_keyboard_layout_change(&self) {
@@ -919,10 +1101,19 @@ impl WaylandClientStatePtr {
         {
             state.mouse_focused_window = Some(window);
         }
-        if let Some(window) = state.keyboard_focused_window.take()
-            && !window.ptr_eq(&closed_window)
-        {
-            state.keyboard_focused_window = Some(window);
+        if let Some(window) = state.keyboard_focused_window.take() {
+            if !window.ptr_eq(&closed_window) {
+                state.keyboard_focused_window = Some(window);
+            } else {
+                state.composing = false;
+                state.pending_text_input = WaylandPendingTextInput::default();
+                state.pre_edit_text = None;
+                state.ime_enabled = None;
+                state.ime_focus_id = None;
+                state.ime_password = false;
+                state.text_input_entered = false;
+                state.last_ime_cursor_rectangle = None;
+            }
         }
         if let Some(window) = state.cursor_hidden_window.take()
             && !window.ptr_eq(&closed_window)
@@ -1194,8 +1385,10 @@ impl WaylandConnection {
             data_device,
             primary_selection,
             text_input: None,
+            text_input_entered: false,
+            text_input_commit_serial: 0,
+            pending_text_input: WaylandPendingTextInput::default(),
             pre_edit_text: None,
-            ime_pre_edit: None,
             composing: false,
             last_ime_cursor_rectangle: None,
             outputs: HashMap::default(),
@@ -1259,6 +1452,7 @@ impl WaylandConnection {
             },
             registrations: Vec::new(),
             ime_enabled: None,
+            ime_focus_id: None,
             ime_password: false,
         }));
 
@@ -2131,9 +2325,14 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
 
                 if let Some(text_input) = state.text_input.take() {
                     text_input.destroy();
-                    state.ime_pre_edit = None;
+                    state.pending_text_input = WaylandPendingTextInput::default();
                     state.composing = false;
                 }
+                state.text_input_entered = false;
+                state.text_input_commit_serial = 0;
+                state.ime_enabled = None;
+                state.ime_focus_id = None;
+                state.last_ime_cursor_rectangle = None;
 
                 state.text_input = state
                     .globals
@@ -2326,7 +2525,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                                     let pre_edit =
                                         state.pre_edit_text.clone().unwrap_or(String::default());
                                     drop(state);
-                                    focused_window.handle_ime(ImeInput::SetMarkedText(pre_edit));
+                                    focused_window
+                                        .handle_ime(ImeInput::SetMarkedText(pre_edit, None));
                                     state = client.borrow_mut();
                                 }
 
@@ -2347,7 +2547,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
                                     }
                                     if let Some(current_key) = new_pre_edit {
                                         focused_window
-                                            .handle_ime(ImeInput::SetMarkedText(current_key));
+                                            .handle_ime(ImeInput::SetMarkedText(current_key, None));
                                     }
                                     compose.feed(keysym);
                                     state = client.borrow_mut();
@@ -2437,66 +2637,114 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
         let client = this.get_client();
         let mut state = client.borrow_mut();
         match event {
-            zwp_text_input_v3::Event::Enter { .. } => {
+            zwp_text_input_v3::Event::Enter { surface } => {
+                state.text_input_entered = true;
+                state.pending_text_input = WaylandPendingTextInput::default();
+                state.ime_enabled = None;
+                state.ime_focus_id = None;
+                state.last_ime_cursor_rectangle = None;
+                let window = state
+                    .windows
+                    .get(&surface.id())
+                    .cloned()
+                    .or_else(|| state.keyboard_focused_window.clone());
                 drop(state);
-                this.enable_ime();
-            }
-            zwp_text_input_v3::Event::Leave { .. } => {
-                drop(state);
-                this.disable_ime();
-            }
-            zwp_text_input_v3::Event::CommitString { text } => {
-                state.composing = false;
-                let Some(window) = state.keyboard_focused_window.clone() else {
-                    return;
-                };
-
-                if let Some(commit_text) = text {
-                    drop(state);
-                    // IBus Intercepts keys like `a`, `b`, but those keys are needed for vim mode.
-                    // We should only send ASCII characters to Zed, otherwise a user could remap a letter like `か` or `相`.
-                    if commit_text.len() == 1 {
-                        window.handle_input(PlatformInput::KeyDown(KeyDownEvent {
-                            keystroke: Keystroke {
-                                modifiers: Modifiers::default(),
-                                key: commit_text.clone(),
-                                key_char: Some(commit_text),
-                            },
-                            is_held: false,
-                            prefer_character_input: false,
-                        }));
+                // Preserve non-interference outside editable text inputs: only
+                // enable `zwp_text_input_v3` when the entered surface currently
+                // has an editable focused input handler.
+                if let Some(window) = window {
+                    let (accepts, focus_id) = window.accepts_text_input_and_focus();
+                    if accepts {
+                        this.enable_ime(focus_id);
                     } else {
-                        window.handle_ime(ImeInput::InsertText(commit_text));
+                        client.borrow_mut().ime_enabled = Some(false);
                     }
+                } else {
+                    client.borrow_mut().ime_enabled = Some(false);
                 }
             }
-            zwp_text_input_v3::Event::PreeditString { text, .. } => {
-                state.composing = true;
-                state.ime_pre_edit = text;
+            zwp_text_input_v3::Event::Leave { surface } => {
+                // Per `zwp_text_input_v3`, after `leave` the compositor ignores
+                // requests until the next `enter` (do not send `disable+commit`,
+                // which would desynchronize `text_input_commit_serial`), and the
+                // client must discard pending double-buffered state and clear
+                // any active preedit on the leaving surface.
+                state.text_input_entered = false;
+                state.pending_text_input = WaylandPendingTextInput::default();
+                state.ime_enabled = Some(false);
+                state.ime_focus_id = None;
+                state.last_ime_cursor_rectangle = None;
+                let was_composing = state.composing;
+                state.composing = false;
+                let window = state
+                    .windows
+                    .get(&surface.id())
+                    .cloned()
+                    .or_else(|| state.keyboard_focused_window.clone());
+                drop(state);
+                if was_composing
+                    && let Some(window) = window
+                {
+                    window.handle_ime(ImeInput::DeleteText);
+                }
+            }
+            zwp_text_input_v3::Event::PreeditString {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                state.pending_text_input.preedit =
+                    Some(text.map(|text| (text, cursor_begin, cursor_end)));
+            }
+            zwp_text_input_v3::Event::CommitString { text } => {
+                state.pending_text_input.commit = Some(text);
+            }
+            zwp_text_input_v3::Event::DeleteSurroundingText {
+                before_length,
+                after_length,
+            } => {
+                state.pending_text_input.delete_surrounding = Some((before_length, after_length));
             }
             zwp_text_input_v3::Event::Done { serial } => {
-                let last_serial = state.serial_tracker.get(SerialKind::InputMethod);
                 state.serial_tracker.update(SerialKind::InputMethod, serial);
+                let pending = std::mem::take(&mut state.pending_text_input);
+                if !state.text_input_entered || state.ime_enabled != Some(true) {
+                    state.composing = false;
+                    return;
+                }
+                let serial_matches = serial == state.text_input_commit_serial;
+                let was_composing = state.composing;
                 let Some(window) = state.keyboard_focused_window.clone() else {
+                    state.composing = false;
                     return;
                 };
+                let (actions, now_composing) = plan_wayland_done_actions(pending, was_composing);
+                state.composing = now_composing;
+                drop(state);
 
-                if let Some(text) = state.ime_pre_edit.take() {
-                    drop(state);
-                    window.handle_ime(ImeInput::SetMarkedText(text));
-                    if let Some(area) = window.get_ime_area() {
-                        let mut state = client.borrow_mut();
-                        set_ime_cursor_rectangle_after_done(
+                for action in actions {
+                    window.handle_ime(action);
+                }
+
+                if serial_matches
+                    && let Some(area) = window.get_ime_area()
+                {
+                    let surface_size = window.logical_size();
+                    let mut state = client.borrow_mut();
+                    let serial_matches = serial == state.text_input_commit_serial;
+                    if state.ime_enabled == Some(true)
+                        && state.text_input_entered
+                        && set_ime_cursor_rectangle_after_done(
                             text_input,
                             &mut state.last_ime_cursor_rectangle,
                             area,
-                            last_serial.as_raw() == serial,
-                        );
+                            Some(surface_size),
+                            serial_matches,
+                        )
+                    {
+                        state.text_input_commit_serial =
+                            state.text_input_commit_serial.wrapping_add(1);
                     }
-                } else {
-                    state.composing = false;
-                    drop(state);
-                    window.handle_ime(ImeInput::DeleteText);
                 }
             }
             _ => {}
@@ -2678,11 +2926,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                 match button_state {
                     wl_pointer::ButtonState::Pressed => {
                         if let Some(window) = state.keyboard_focused_window.clone() {
-                            if state.composing && state.text_input.is_some() {
+                            if state.composing
+                                && state.text_input.is_some()
+                                && state.ime_enabled == Some(true)
+                                && state.text_input_entered
+                            {
+                                let focus_id = state.ime_focus_id;
                                 drop(state);
                                 // text_input_v3 don't have something like a reset function
                                 this.disable_ime();
-                                this.enable_ime();
+                                this.enable_ime(focus_id);
                                 window.handle_ime(ImeInput::UnmarkText);
                                 state = client.borrow_mut();
                             } else if let (Some(text), Some(compose)) =
@@ -3588,6 +3841,7 @@ mod tests {
             &text_input,
             &mut last_ime_cursor_rectangle,
             updated_bounds,
+            None,
             true,
         );
         update_ime_cursor_rectangle(&text_input, &mut last_ime_cursor_rectangle, updated_bounds);
@@ -3607,6 +3861,7 @@ mod tests {
             &text_input,
             &mut last_ime_cursor_rectangle,
             bounds,
+            None,
             true,
         );
 
@@ -3639,16 +3894,27 @@ mod tests {
 
     #[derive(Default)]
     struct FakeImeContentTypeSink {
+        ops: RefCell<Vec<&'static str>>,
         content_types: RefCell<Vec<(ContentHint, ContentPurpose)>>,
         commit_count: Cell<usize>,
     }
 
     impl ImeContentTypeSink for FakeImeContentTypeSink {
+        fn disable_ime_content(&self) {
+            self.ops.borrow_mut().push("disable");
+        }
+
+        fn enable_ime_content(&self) {
+            self.ops.borrow_mut().push("enable");
+        }
+
         fn set_ime_content_type(&self, hint: ContentHint, purpose: ContentPurpose) {
+            self.ops.borrow_mut().push("set_content_type");
             self.content_types.borrow_mut().push((hint, purpose));
         }
 
         fn commit_ime_content_type(&self) {
+            self.ops.borrow_mut().push("commit");
             self.commit_count.set(self.commit_count.get() + 1);
         }
     }
@@ -3657,46 +3923,55 @@ mod tests {
     fn password_ime_toggles_sensitive_content_type_when_enabled() {
         let sink = FakeImeContentTypeSink::default();
         let mut ime_password = false;
-
-        // Before IME is enabled, state updates without redundant commits.
-        apply_ime_password_change(Some(&sink), Some(false), &mut ime_password, true);
-        assert!(ime_password);
-        assert_eq!(sink.commit_count.get(), 0);
-        assert_eq!(
-            ime_content_type(ime_password),
-            (ContentHint::SensitiveData, ContentPurpose::Password)
+        let expected_password = (
+            ContentHint::SensitiveData | ContentHint::HiddenText,
+            ContentPurpose::Password,
         );
 
-        // Switching back to normal while IME is active immediately notifies the compositor.
-        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false);
+        // Before IME is enabled, state updates without redundant commits.
+        assert_eq!(
+            apply_ime_password_change(Some(&sink), Some(false), &mut ime_password, true),
+            0
+        );
+        assert!(ime_password);
+        assert_eq!(sink.commit_count.get(), 0);
+        assert_eq!(ime_content_type(ime_password), expected_password);
+
+        // Switching back to normal while IME is active cycles disable+commit,
+        // enable+set_content_type+commit so spec-compliant compositors honor it.
+        assert_eq!(
+            apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false),
+            2
+        );
         assert!(!ime_password);
-        assert_eq!(sink.commit_count.get(), 1);
+        assert_eq!(sink.commit_count.get(), 2);
         assert_eq!(
             sink.content_types.borrow().as_slice(),
             &[(ContentHint::None, ContentPurpose::Normal)]
         );
+        assert_eq!(
+            sink.ops.borrow().as_slice(),
+            &["disable", "commit", "enable", "set_content_type", "commit"]
+        );
 
         // Redundant same-state update does not re-commit.
-        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false);
-        assert_eq!(sink.commit_count.get(), 1);
-
-        // Moving into a masked input sends SensitiveData + Password and commits once.
-        apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, true);
+        assert_eq!(
+            apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, false),
+            0
+        );
         assert_eq!(sink.commit_count.get(), 2);
+
+        // Moving into a masked input cycles disable+enable with SensitiveData|HiddenText + Password.
+        assert_eq!(
+            apply_ime_password_change(Some(&sink), Some(true), &mut ime_password, true),
+            2
+        );
+        assert_eq!(sink.commit_count.get(), 4);
         assert_eq!(
             sink.content_types.borrow().as_slice(),
-            &[
-                (ContentHint::None, ContentPurpose::Normal),
-                (ContentHint::SensitiveData, ContentPurpose::Password),
-            ]
+            &[(ContentHint::None, ContentPurpose::Normal), expected_password]
         );
-
-        // Compositor Leave -> Enter or pointer-click composing reset (`disable_ime` then
-        // `enable_ime`) preserves `ime_password == true` so re-enabling still sends Password.
-        assert_eq!(
-            ime_content_type(ime_password),
-            (ContentHint::SensitiveData, ContentPurpose::Password)
-        );
+        assert_eq!(ime_content_type(ime_password), expected_password);
     }
 
     #[test]
@@ -3709,12 +3984,152 @@ mod tests {
         let step1 = Bounds::new(point(px(120.6), px(44.4)), size(px(16.5), px(22.2)));
         let step2 = Bounds::new(point(px(137.1), px(44.4)), size(px(16.5), px(22.2)));
         update_ime_cursor_rectangle(&sink, &mut last, step1);
-        set_ime_cursor_rectangle_after_done(&sink, &mut last, step2, true);
+        set_ime_cursor_rectangle_after_done(&sink, &mut last, step2, None, true);
 
         assert_eq!(sink.commit_count.get(), 2);
         assert_eq!(
             sink.cursor_rectangles.borrow().as_slice(),
             &[(120, 44, 16, 22), (137, 44, 16, 22)]
+        );
+
+        // Mismatched Done serial must not mutate pending cursor rectangle or commit.
+        let step3 = Bounds::new(point(px(160.0), px(44.4)), size(px(16.5), px(22.2)));
+        assert!(!set_ime_cursor_rectangle_after_done(
+            &sink, &mut last, step3, None, false
+        ));
+        assert_eq!(sink.commit_count.get(), 2);
+        assert_eq!(sink.cursor_rectangles.borrow().len(), 2);
+    }
+
+    #[test]
+    fn cursor_rectangle_clamps_negative_overflow_and_non_finite_bounds() {
+        let surface = size(px(800.0), px(600.0));
+        let scrolled_off = Bounds::new(point(px(-40.0), px(-12.5)), size(px(0.0), px(-5.0)));
+        assert_eq!(
+            ImeCursorRectangle::from_bounds(scrolled_off, Some(surface)),
+            ImeCursorRectangle {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }
+        );
+
+        let past_edge = Bounds::new(point(px(950.0), px(720.0)), size(px(200.0), px(80.0)));
+        assert_eq!(
+            ImeCursorRectangle::from_bounds(past_edge, Some(surface)),
+            ImeCursorRectangle {
+                x: 799,
+                y: 599,
+                width: 1,
+                height: 1,
+            }
+        );
+
+        let non_finite = Bounds::new(
+            point(px(f32::NAN), px(f32::INFINITY)),
+            size(px(f32::NEG_INFINITY), px(f32::NAN)),
+        );
+        assert_eq!(
+            ImeCursorRectangle::from_bounds(non_finite, Some(surface)),
+            ImeCursorRectangle {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn wayland_done_applies_double_buffered_events_in_protocol_order() {
+        // Combined delete_surrounding + commit + new preedit with interior UTF-8 cursor
+        // while previously composing.
+        let pending = WaylandPendingTextInput {
+            delete_surrounding: Some((3, 0)),
+            commit: Some(Some("日".to_string())),
+            preedit: Some(Some(("ほん🎉".to_string(), 3, 6))),
+        };
+        let (actions, composing) = plan_wayland_done_actions(pending, true);
+        assert!(composing);
+        assert_eq!(
+            actions,
+            vec![
+                ImeInput::DeleteText,
+                ImeInput::DeleteSurroundingText {
+                    before_bytes: 3,
+                    after_bytes: 0,
+                },
+                ImeInput::InsertText("日".to_string()),
+                ImeInput::SetMarkedText("ほん🎉".to_string(), Some(1..2)),
+            ]
+        );
+
+        // In-place preedit -> preedit update does not emit a separate DeleteText
+        // that would fragment undo or emit a spurious empty intermediate change.
+        let update = WaylandPendingTextInput {
+            delete_surrounding: None,
+            commit: None,
+            preedit: Some(Some(("にほ".to_string(), 6, 6))),
+        };
+        let (actions, composing) = plan_wayland_done_actions(update, true);
+        assert!(composing);
+        assert_eq!(
+            actions,
+            vec![ImeInput::SetMarkedText("にほ".to_string(), Some(2..2))]
+        );
+
+        // In-place preedit -> commit update replaces marked range atomically.
+        let commit_only = WaylandPendingTextInput {
+            delete_surrounding: None,
+            commit: Some(Some("日本".to_string())),
+            preedit: None,
+        };
+        let (actions, composing) = plan_wayland_done_actions(commit_only, true);
+        assert!(!composing);
+        assert_eq!(actions, vec![ImeInput::InsertText("日本".to_string())]);
+
+        // Empty preedit / empty commit clears composing without inserting empty text.
+        let clear = WaylandPendingTextInput {
+            preedit: Some(Some((String::new(), 0, 0))),
+            commit: Some(Some(String::new())),
+            delete_surrounding: None,
+        };
+        let (actions, composing) = plan_wayland_done_actions(clear, true);
+        assert!(!composing);
+        assert_eq!(actions, vec![ImeInput::DeleteText]);
+    }
+
+    #[test]
+    fn wayland_utf8_cursor_and_delete_surrounding_handle_multibyte_and_bad_offsets() {
+        use crate::linux::wayland::window::{
+            delete_surrounding_utf16_range, utf8_byte_range_to_utf16,
+        };
+
+        // 4-byte emoji ("🎉" = 2 UTF-16 code units) + ASCII ("a" = 1 UTF-16 code unit).
+        assert_eq!(utf8_byte_range_to_utf16("🎉a", 0, 4), Some(0..2));
+        assert_eq!(utf8_byte_range_to_utf16("🎉a", 4, 5), Some(2..3));
+        // Mid-codepoint byte offsets snap safely downward without panicking.
+        assert_eq!(utf8_byte_range_to_utf16("🎉a", 2, 5), Some(0..3));
+        // Inverted offsets normalize; out-of-bounds clamp; -1 returns None.
+        assert_eq!(utf8_byte_range_to_utf16("にほん", 99, 3), Some(1..3));
+        assert_eq!(utf8_byte_range_to_utf16("にほん", -1, -1), None);
+
+        // Delete surrounding: "a🎉" before (5 bytes, 3 UTF-16) and "b日" after (4 bytes, 2 UTF-16).
+        assert_eq!(
+            delete_surrounding_utf16_range("a🎉", "b日", 10, 10, 4, 1),
+            Some(8..11)
+        );
+        // Mid-UTF-8-char before_bytes=2 inside 4-byte emoji snaps cleanly to avoid partial deletion,
+        // even when a non-empty selection is active.
+        assert_eq!(
+            delete_surrounding_utf16_range("a🎉", "", 10, 12, 2, 0),
+            None
+        );
+        // Oversized u32::MAX clamps safely to available text.
+        assert_eq!(
+            delete_surrounding_utf16_range("a🎉", "b日", 3, 3, u32::MAX, u32::MAX),
+            Some(0..5)
         );
     }
 }

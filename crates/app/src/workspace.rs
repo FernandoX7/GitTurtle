@@ -2897,61 +2897,68 @@ impl GitTurtle {
                             let owner = owner.clone();
                             let messages = Arc::clone(&messages);
                             let list = if messages.is_empty() {
-                                div()
-                                    .text_size(crate::appearance::ui_text(12.))
-                                    .text_color(rgb(p.muted))
-                                    .child("No recent commits found on this branch.")
-                                    .into_any_element()
+                                native_accessibility::text(
+                                    "recent-commit-messages-empty",
+                                    "No recent commits found on this branch.",
+                                )
+                                .text_size(crate::appearance::ui_text(12.))
+                                .text_color(rgb(p.muted))
+                                .into_any_element()
                             } else {
-                                div()
-                                    .id("recent-commit-messages-list")
-                                    .max_h(px(340.))
-                                    .overflow_y_scroll()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .children(messages.iter().enumerate().map(|(ix, item)| {
-                                        let subject = item.subject.clone();
-                                        let body = item.body.clone();
-                                        let short = short_oid(&item.oid);
-                                        let owner = owner.clone();
-                                        let path = path.clone();
-                                        let label = format!("{} · {short}", item.subject);
-                                        let accessible = format!(
-                                            "Use commit message from {short}: {}",
-                                            item.subject
-                                        );
-                                        button(("recent-commit-msg", ix), label, "", false)
-                                            .debug_selector(move || {
-                                                format!("recent-commit-msg-{ix}")
-                                            })
-                                            .accessibility_label(accessible)
-                                            .w_full()
-                                            .on_click(move |_, window, cx| {
-                                                let subject = subject.clone();
-                                                let body = body.clone();
-                                                let path = path.clone();
-                                                let _ = owner.update(cx, |this, cx| {
-                                                    if this.path.as_ref() == Some(&path) {
-                                                        this.commit_title.update(
-                                                            cx,
-                                                            |input, cx| {
-                                                                input.set_value(subject, window, cx)
-                                                            },
-                                                        );
-                                                        this.commit_message.update(
-                                                            cx,
-                                                            |input, cx| {
-                                                                input.set_value(body, window, cx)
-                                                            },
-                                                        );
-                                                        this.persist_commit_draft(window, cx);
-                                                    }
-                                                });
-                                                window.close_dialog(cx);
-                                            })
-                                    }))
-                                    .into_any_element()
+                                native_accessibility::clips_children(
+                                    div()
+                                        .id("recent-commit-messages-list")
+                                        .max_h(px(340.))
+                                        .overflow_y_scroll()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .children(messages.iter().enumerate().map(|(ix, item)| {
+                                            let subject = item.subject.clone();
+                                            let body = item.body.clone();
+                                            let short = short_oid(&item.oid);
+                                            let owner = owner.clone();
+                                            let path = path.clone();
+                                            let label = format!("{} · {short}", item.subject);
+                                            let accessible = format!(
+                                                "Use commit message from {short}: {}",
+                                                item.subject
+                                            );
+                                            button(("recent-commit-msg", ix), label, "", false)
+                                                .debug_selector(move || {
+                                                    format!("recent-commit-msg-{ix}")
+                                                })
+                                                .accessibility_label(accessible)
+                                                .w_full()
+                                                .on_click(move |_, window, cx| {
+                                                    let subject = subject.clone();
+                                                    let body = body.clone();
+                                                    let path = path.clone();
+                                                    let _ = owner.update(cx, |this, cx| {
+                                                        if this.path.as_ref() == Some(&path) {
+                                                            this.commit_title.update(
+                                                                cx,
+                                                                |input, cx| {
+                                                                    input.set_value(
+                                                                        subject, window, cx,
+                                                                    )
+                                                                },
+                                                            );
+                                                            this.commit_message.update(
+                                                                cx,
+                                                                |input, cx| {
+                                                                    input
+                                                                        .set_value(body, window, cx)
+                                                                },
+                                                            );
+                                                            this.persist_commit_draft(window, cx);
+                                                        }
+                                                    });
+                                                    window.close_dialog(cx);
+                                                })
+                                        })),
+                                )
+                                .into_any_element()
                             };
                             dialog
                                 .title("Recent commit messages")

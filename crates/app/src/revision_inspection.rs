@@ -1507,9 +1507,13 @@ impl GitTurtle {
             let dismiss_focus = return_focus.clone();
             let suggested_name = format!("{base_label}-{head_label}.patch");
             let body = if loading {
+                use crate::native_accessibility::LiveRegion as _;
                 div()
                     .id("export-patch-loading")
                     .role(Role::Status)
+                    .aria_label("Formatting patch range…")
+                    .aria_value("Formatting patch range…")
+                    .live_region(gpui::accesskit::Live::Polite, true)
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(colors.muted))
                     .child("Formatting patch range…")
@@ -1537,7 +1541,7 @@ impl GitTurtle {
                                         }
                                     )),
                             )
-                            .child(
+                            .child(crate::native_accessibility::static_text(
                                 div()
                                     .id("export-patch-preview")
                                     .max_h(px(300.))
@@ -1548,14 +1552,18 @@ impl GitTurtle {
                                     .border_color(rgb(colors.border))
                                     .bg(rgb(colors.canvas))
                                     .text_size(appearance::code_text())
-                                    .child(preview),
-                            )
+                                    .child(preview.clone()),
+                                preview,
+                            ))
                             .when_some(note, |el, msg| {
+                                use crate::native_accessibility::LiveRegion as _;
                                 el.child(
                                     div()
                                         .id("export-patch-save-status")
                                         .role(Role::Status)
                                         .aria_label(msg.clone())
+                                        .aria_value(msg.clone())
+                                        .polite()
                                         .text_size(appearance::ui_text(11.))
                                         .text_color(rgb(accent_label))
                                         .child(msg),
@@ -1563,14 +1571,16 @@ impl GitTurtle {
                             })
                             .into_any_element()
                     }
-                    Err(error) => div()
-                        .id("export-patch-error")
-                        .role(Role::Alert)
-                        .aria_label(error.clone())
-                        .text_size(appearance::ui_text(12.))
-                        .text_color(rgb(removed_label))
-                        .child(error.clone())
-                        .into_any_element(),
+                    Err(error) => {
+                        use crate::native_accessibility::LiveRegion as _;
+                        div()
+                            .id("export-patch-error")
+                            .alert(error.clone())
+                            .text_size(appearance::ui_text(12.))
+                            .text_color(rgb(removed_label))
+                            .child(error.clone())
+                            .into_any_element()
+                    }
                 }
             };
             let patch_ok = (!loading)
@@ -1862,19 +1872,22 @@ impl GitTurtle {
                                 .aria_label("Patch content")
                                 .h(px(220.)),
                         )
-                        .child(
+                        .child({
+                            use crate::native_accessibility::LiveRegion as _;
                             div()
                                 .id("apply-patch-status")
                                 .role(Role::Status)
                                 .aria_label(status.clone())
+                                .aria_value(status.clone())
+                                .live_region(gpui::accesskit::Live::Polite, checking)
                                 .text_size(appearance::ui_text(11.))
                                 .text_color(rgb(if ready.is_some() {
                                     accent_label
                                 } else {
                                     colors.muted
                                 }))
-                                .child(status),
-                        ),
+                                .child(status)
+                        }),
                 )
                 .footer(
                     DialogFooter::new()

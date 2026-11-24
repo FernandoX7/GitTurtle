@@ -1070,12 +1070,14 @@ impl ProjectHub {
                     })
                     .when(!self.filtered.is_empty(), |panel| {
                         panel.p(padding - room).child(
-                            uniform_list("recent-projects", self.filtered.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                range.map(|index| this.recent_row(index, cx)).collect::<Vec<_>>()
-                            }))
-                            .size_full()
-                            .p(room)
-                            .track_scroll(&self.recent_scroll),
+                            crate::native_accessibility::clips_children(
+                                uniform_list("recent-projects", self.filtered.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                    range.map(|index| this.recent_row(index, cx)).collect::<Vec<_>>()
+                                }))
+                                .size_full()
+                                .p(room)
+                                .track_scroll(&self.recent_scroll),
+                            ),
                         )
                     }),
             )

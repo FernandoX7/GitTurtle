@@ -1006,13 +1006,37 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    fn is_secret_field(&self) -> bool {
+        self.masked || self.accessibility.as_ref().is_some_and(|a| !a.value_exposed)
+    }
+
+    fn sync_masked_ime_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_secret_field() && self.ime_marked_range.is_some() {
+            self.replace_text_in_range(None, "", window, cx);
+            if self.ime_marked_range.is_some() {
+                self.unmark_text(window, cx);
+            }
+        }
+        if self.focus_handle.is_focused(window) {
+            #[cfg(target_os = "linux")]
+            if self.is_editable() {
+                super::native::set_text_content_type(
+                    window,
+                    self.is_secret_field().then_some("password"),
+                );
+            }
+            window.invalidate_character_coordinates();
+        }
+    }
+
     /// Flip the password mask.
     ///
     /// Setting the mask is a single-line method, but flipping it stays here:
     /// the reveal button is rendered from the generic path, and it can only be
     /// switched on through [`crate::input::InputState`] anyway.
-    pub fn toggle_masked(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_masked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.masked = !self.masked;
+        self.sync_masked_ime_state(window, cx);
         cx.notify();
     }
 
@@ -3124,6 +3148,7 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(super) fn write_selection_to_primary(&self, cx: &mut Context<Self>) {
         if self.suppress_primary_selection
             || !self.is_copyable()
+            || self.is_secret_field()
             || self.selections.iter().all(|sel| sel.is_empty())
         {
             return;
@@ -4382,7 +4407,12 @@ impl<M: InputModeKind> InputBaseState<M> {
         // does.
         self.held_blur = None;
         #[cfg(target_os = "linux")]
-        super::native::set_text_content_type(window, self.masked.then_some("password"));
+        if self.is_editable() {
+            super::native::set_text_content_type(
+                window,
+                self.is_secret_field().then_some("password"),
+            );
+        }
         #[cfg(not(target_os = "linux"))]
         let _ = window;
         self.blink_cursor.update(cx, |cursor, cx| {
@@ -4394,10 +4424,6 @@ impl<M: InputModeKind> InputBaseState<M> {
     fn on_blur(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_mouse_gesture(cx);
         self.revealed_viewport = None;
-        #[cfg(target_os = "linux")]
-        if self.masked {
-            super::native::set_text_content_type(window, None);
-        }
         // GitTurtle patch: a right-press pending here ends once this input
         // loses focus, as GPUI reports when another element takes it, the
         // input leaves the drawn frame or the window goes inactive.
@@ -4440,6 +4466,11 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// and inline-completion state, clamps a number, and emits `Blur`.
     fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         M::hide_context_menu(self, cx);
+        if let Some(marked) = self.ime_marked_range {
+            let end = marked.end.min(self.text.len());
+            self.set_cursor_to(end);
+            self.unmark_text(window, cx);
+        }
         self.undo_manager.break_transaction_coalescing();
 
         // NOTE: Do not cancel select, when blur.
@@ -5509,6 +5540,21 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             .offset_to_point(range.end.min(self.text.len()))
             .row;
 
+        let start_display = if self.masked {
+            self.text
+                .offset_to_char_index(range.start.min(self.text.len()))
+                * MASK_CHAR.len_utf8()
+        } else {
+            range.start.min(self.text.len())
+        };
+        let end_display = if self.masked {
+            self.text
+                .offset_to_char_index(range.end.min(self.text.len()))
+                * MASK_CHAR.len_utf8()
+        } else {
+            range.end.min(self.text.len())
+        };
+
         for (vi, line) in last_layout.lines.iter().enumerate() {
             if start_origin.is_some() && end_origin.is_some() {
                 break;
@@ -5518,7 +5564,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             let index_offset = last_layout.visible_line_byte_offsets[vi];
 
             if start_origin.is_none() && buffer_line == start_row {
-                let local_offset = range.start.saturating_sub(index_offset).min(line.len());
+                let local_offset = start_display.saturating_sub(index_offset).min(line.len());
                 let p = line
                     .position_for_index(local_offset, last_layout, false)
                     .unwrap_or_else(|| point(px(0.), px(0.)));
@@ -5526,7 +5572,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }
 
             if end_origin.is_none() && buffer_line == end_row {
-                let local_offset = range.end.saturating_sub(index_offset).min(line.len());
+                let local_offset = end_display.saturating_sub(index_offset).min(line.len());
                 let p = line
                     .position_for_index(local_offset, last_layout, false)
                     .unwrap_or_else(|| point(px(0.), px(0.)));
@@ -9779,6 +9825,64 @@ mod tests {
                 assert!(capabilities.has_selection());
                 assert!(!capabilities.is_copyable());
             });
+        });
+    }
+
+    #[gpui::test]
+    fn test_bounds_for_range_maps_masked_offsets_to_bullets(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.masked(true));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("abcd", window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                let container = state.last_bounds.expect("masked input should be laid out");
+                let first_two = state
+                    .bounds_for_range(0..2, container, window, cx)
+                    .expect("bounds for first two masked chars");
+                let last_two = state
+                    .bounds_for_range(2..4, container, window, cx)
+                    .expect("bounds for last two masked chars");
+                assert!(
+                    last_two.origin.x > first_two.origin.x,
+                    "masked char 2..4 should start past char 0..2: first={first_two:?}, last={last_two:?}"
+                );
+                assert!(
+                    last_two.right() > first_two.right(),
+                    "masked char 2..4 should end past char 0..2: first={first_two:?}, last={last_two:?}"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_blur_unmarks_active_ime_composition(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.on_focus(window, cx);
+                state.set_value("fix", window, cx);
+                state.replace_and_mark_text_in_range(None, "ing", Some(0..2), window, cx);
+                assert_eq!(state.ime_marked_range, Some((3..6).into()));
+                state.on_blur(window, cx);
+            });
+        });
+
+        cx.update(|_, cx| {
+            let state = input.read(cx);
+            assert_eq!(state.value(), "fixing");
+            assert_eq!(state.ime_marked_range, None);
+            assert_eq!(state.selected_range(), 6..6);
         });
     }
 
@@ -14286,8 +14390,9 @@ impl InputBaseState<crate::input::InputMode> {
     }
 
     /// Set the password masked state of the input field.
-    pub fn set_masked(&mut self, masked: bool, _: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_masked(&mut self, masked: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.masked = masked;
+        self.sync_masked_ime_state(window, cx);
         cx.notify();
     }
 

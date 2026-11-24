@@ -671,12 +671,13 @@ impl GitTurtle {
         let pickaxe_regex = self.history_search.pickaxe_regex;
         let has_filters = !filter.is_empty();
         Some(
-            div()
-                .id("history-search-filter-bar")
-                .debug_selector(|| "history-search-filter-bar".into())
-                .flex_shrink_0()
-                .max_h(appearance::ui_size(140.))
-                .overflow_y_scroll()
+            crate::native_accessibility::clips_children(
+                div()
+                    .id("history-search-filter-bar")
+                    .debug_selector(|| "history-search-filter-bar".into())
+                    .flex_shrink_0()
+                    .max_h(appearance::ui_size(140.))
+                    .overflow_y_scroll()
                 .px_3()
                 .pb_2()
                 .flex()
@@ -827,8 +828,9 @@ impl GitTurtle {
                                     })),
                             )
                         }),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 

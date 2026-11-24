@@ -1003,3 +1003,364 @@ fn orca_reads_the_identity_fields_by_their_values(cx: &mut gpui::TestAppContext)
         ["Name entry Your name", "Email entry you@example.com"]
     );
 }
+
+#[test]
+fn expandable_busy_level_labelled_by_and_one_based_posinset_reach_atspi() {
+    use accesskit_atspi_common::RelationType;
+    use gpui_kit::gpui::accesskit::Rect as AkRect;
+
+    let expanded_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(NodeId, bool)>::new()));
+    let announced = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+    struct RecordingCallbacks {
+        expanded: std::sync::Arc<std::sync::Mutex<Vec<(NodeId, bool)>>>,
+        announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl AdapterCallback for RecordingCallbacks {
+        fn register_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}
+        fn unregister_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}
+        fn emit_event(&self, _: &Adapter, event: Event) {
+            match event {
+                Event::Object {
+                    target: NodeIdOrRoot::Node(id),
+                    event: ObjectEvent::StateChanged(State::Expanded, value),
+                } => self.expanded.lock().unwrap().push((id, value)),
+                Event::Object {
+                    event: ObjectEvent::Announcement(text, _),
+                    ..
+                } => self.announced.lock().unwrap().push(text),
+                _ => {}
+            }
+        }
+    }
+
+    let [
+        root,
+        tree,
+        folder,
+        heading,
+        status,
+        dialog,
+        title,
+        list,
+        opt0,
+        opt1,
+    ] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(LocalNodeId);
+
+    let mut window = Node::new(Role::Window);
+    window.set_label("GitTurtle");
+    window.set_children(vec![tree, heading, status, dialog, list]);
+
+    let mut tree_node = Node::new(Role::Tree);
+    tree_node.set_label("Branches");
+    tree_node.set_children(vec![folder]);
+
+    let mut folder_node = Node::new(Role::TreeItem);
+    folder_node.set_label("Local");
+    folder_node.set_expanded(false);
+    folder_node.set_level(1);
+
+    let mut heading_node = Node::new(Role::Heading);
+    heading_node.set_label("History");
+    heading_node.set_level(2);
+
+    let mut status_node = Node::new(Role::Status);
+    status_node.set_label("Loading patch…");
+    status_node.set_live(Live::Polite);
+    status_node.set_busy();
+
+    let mut title_node = Node::new(Role::Label);
+    title_node.set_value("Export patch");
+
+    let mut dialog_node = Node::new(Role::Dialog);
+    dialog_node.set_labelled_by(vec![title]);
+    dialog_node.set_children(vec![title]);
+
+    let mut list_node = Node::new(Role::ListBox);
+    list_node.set_label("Commit history");
+    list_node.set_size_of_set(3);
+    list_node.set_children(vec![opt0, opt1]);
+
+    let mut opt0_node = Node::new(Role::ListBoxOption);
+    opt0_node.set_label("First commit");
+    opt0_node.set_position_in_set(0);
+    opt0_node.set_bounds(AkRect {
+        x0: 10.0,
+        y0: 20.0,
+        x1: 210.0,
+        y1: 50.0,
+    });
+
+    let mut opt1_node = Node::new(Role::ListBoxOption);
+    opt1_node.set_label("Second commit");
+    opt1_node.set_position_in_set(1);
+
+    let window_rect = AkRect {
+        x0: 100.0,
+        y0: 50.0,
+        x1: 900.0,
+        y1: 650.0,
+    };
+    let mut adapter = Adapter::new(
+        &AppContext::new(None),
+        RecordingCallbacks {
+            expanded: expanded_events.clone(),
+            announced: announced.clone(),
+        },
+        TreeUpdate {
+            nodes: vec![
+                (root, window),
+                (tree, tree_node),
+                (folder, folder_node.clone()),
+                (heading, heading_node),
+                (status, status_node),
+                (dialog, dialog_node),
+                (title, title_node),
+                (list, list_node),
+                (opt0, opt0_node),
+                (opt1, opt1_node),
+            ],
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            focus: folder,
+        },
+        true,
+        WindowBounds::new(window_rect, window_rect),
+        IgnoreCallbacks,
+    );
+
+    let root_node = adapter.platform_node(adapter.root_id());
+    let tree_id = root_node.child_at_index(0).unwrap().unwrap();
+    let folder_id = adapter
+        .platform_node(tree_id)
+        .child_at_index(0)
+        .unwrap()
+        .unwrap();
+    let heading_id = root_node.child_at_index(1).unwrap().unwrap();
+    let status_id = root_node.child_at_index(2).unwrap().unwrap();
+    let dialog_id = root_node.child_at_index(3).unwrap().unwrap();
+    let list_id = root_node.child_at_index(4).unwrap().unwrap();
+    let opt0_id = adapter
+        .platform_node(list_id)
+        .child_at_index(0)
+        .unwrap()
+        .unwrap();
+    let opt1_id = adapter
+        .platform_node(list_id)
+        .child_at_index(1)
+        .unwrap()
+        .unwrap();
+
+    let folder_platform = adapter.platform_node(folder_id);
+    assert!(folder_platform.state().contains(State::Expandable));
+    assert!(!folder_platform.state().contains(State::Expanded));
+    assert_eq!(
+        folder_platform
+            .attributes()
+            .unwrap()
+            .get("level")
+            .map(String::as_str),
+        Some("1")
+    );
+
+    assert_eq!(
+        adapter
+            .platform_node(heading_id)
+            .attributes()
+            .unwrap()
+            .get("level")
+            .map(String::as_str),
+        Some("2")
+    );
+
+    assert!(
+        adapter
+            .platform_node(status_id)
+            .state()
+            .contains(State::Busy)
+    );
+
+    let dialog_platform = adapter.platform_node(dialog_id);
+    let relations = dialog_platform.relation_set(|id| id).unwrap();
+    assert!(
+        relations
+            .iter()
+            .any(|(kind, targets)| *kind == RelationType::LabelledBy && !targets.is_empty()),
+        "dialog should expose RelationType::LabelledBy"
+    );
+
+    let opt0_attrs = adapter.platform_node(opt0_id).attributes().unwrap();
+    let opt1_attrs = adapter.platform_node(opt1_id).attributes().unwrap();
+    assert_eq!(opt0_attrs.get("posinset").map(String::as_str), Some("1"));
+    assert_eq!(opt0_attrs.get("setsize").map(String::as_str), Some("3"));
+    assert_eq!(opt1_attrs.get("posinset").map(String::as_str), Some("2"));
+    assert_eq!(opt1_attrs.get("setsize").map(String::as_str), Some("3"));
+
+    let screen_extents = adapter
+        .platform_node(opt0_id)
+        .extents(CoordType::Screen)
+        .unwrap();
+    assert_eq!(screen_extents.x, 110);
+    assert_eq!(screen_extents.y, 70);
+    assert_eq!(screen_extents.width, 200);
+    assert_eq!(screen_extents.height, 30);
+
+    // Expanding the tree item must emit StateChanged(Expanded, true), and
+    // updating the polite status clears Busy and announces via AT-SPI.
+    folder_node.set_expanded(true);
+    let mut done_status = Node::new(Role::Status);
+    done_status.set_label("Patch formatted.");
+    done_status.set_live(Live::Polite);
+    adapter.update(TreeUpdate {
+        nodes: vec![(folder, folder_node), (status, done_status)],
+        tree: None,
+        tree_id: TreeId::ROOT,
+        focus: folder,
+    });
+    assert!(
+        adapter
+            .platform_node(folder_id)
+            .state()
+            .contains(State::Expandable | State::Expanded)
+    );
+    assert!(
+        expanded_events.lock().unwrap().contains(&(folder_id, true)),
+        "expanding a tree item must emit AT-SPI StateChanged(Expanded, true)"
+    );
+    assert!(
+        !adapter
+            .platform_node(status_id)
+            .state()
+            .contains(State::Busy),
+        "completed status should clear AT-SPI State::Busy"
+    );
+    assert!(
+        announced
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|text| text == "Patch formatted."),
+        "updated polite status should announce via AT-SPI"
+    );
+}
+
+#[test]
+fn popup_menu_label_has_non_empty_atspi_name() {
+    let [root, menu, label, item] = [0, 1, 2, 3].map(LocalNodeId);
+    let mut window = Node::new(Role::Window);
+    window.set_children(vec![menu]);
+
+    let mut menu_node = Node::new(Role::Menu);
+    menu_node.set_label("Menu");
+    menu_node.set_children(vec![label, item]);
+
+    let mut label_node = Node::new(Role::Label);
+    label_node.set_value("Saved profiles");
+
+    let mut item_node = Node::new(Role::MenuItem);
+    item_node.set_label("Default");
+
+    let found = reached(TreeUpdate {
+        nodes: vec![
+            (root, window),
+            (menu, menu_node),
+            (label, label_node),
+            (item, item_node),
+        ],
+        tree: Some(Tree::new(root)),
+        tree_id: TreeId::ROOT,
+        focus: item,
+    });
+    assert!(
+        found
+            .iter()
+            .any(|node| node.role == AtspiRole::Menu && node.name == "Menu"),
+        "popup menu should expose its accessible name: {found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|node| node.role == AtspiRole::Label && node.name == "Saved profiles"),
+        "popup menu section label should expose its value as AT-SPI name: {found:?}"
+    );
+}
+
+#[gpui::test]
+async fn history_and_command_palette_write_zero_based_positions_and_container_setsize(
+    cx: &mut gpui::TestAppContext,
+) {
+    use gpui::AppContext as _;
+    cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        crate::shortcuts::bind_keys(cx);
+        crate::native_accessibility::bind_keys(cx);
+    });
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = crate::tags::tests::tagged_repository(fixture.path());
+    let path = repo.path().to_owned();
+    let captured: std::rc::Rc<std::cell::RefCell<Option<Entity<crate::GitTurtle>>>> =
+        Default::default();
+    let observed = captured.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            let app = crate::GitTurtle::new(
+                Some(path),
+                crate::Preferences::default(),
+                crate::repository_tabs::Session::default(),
+                crate::activity::State::default(),
+                crate::recovery_drafts::State::default(),
+                window,
+                cx,
+            );
+            futures::executor::block_on(app.preferences_writer.submit(|| Ok(())))
+                .expect("startup preferences worker replied")
+                .expect("startup preferences queue drained");
+            app
+        });
+        *captured.borrow_mut() = Some(app.clone());
+        gpui_kit::component::Root::new(app, window, cx)
+    });
+    let app = observed.borrow_mut().take().unwrap();
+    cx.simulate_resize(gpui::size(px(1200.), px(760.)));
+    crate::views::tests::settle(&app, cx).await;
+    crate::tags::tests::draw(cx);
+
+    let history_list = super::written::get("history-pane").expect("history-pane node");
+    assert_eq!(history_list.node.role(), Role::ListBox);
+    let visible_commits = cx.read(|cx| app.read(cx).visible.len());
+    assert!(visible_commits >= 1);
+    assert_eq!(history_list.node.size_of_set(), Some(visible_commits));
+
+    let first_commit = super::written::inside("history-pane")
+        .into_iter()
+        .find_map(|id| {
+            let entry = super::written::get(&id)?;
+            (entry.node.role() == Role::ListBoxOption && entry.node.position_in_set() == Some(0))
+                .then_some(entry)
+        })
+        .expect("first history row should have 0-based position_in_set(0)");
+    assert_eq!(first_commit.node.size_of_set(), None);
+
+    // Open the command palette and check container setsize + 0-based row posinset.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+    crate::tags::tests::draw(cx);
+    let palette_list =
+        super::written::get("command-palette-results").expect("command-palette-results node");
+    assert_eq!(palette_list.node.role(), Role::ListBox);
+    let set_size = palette_list
+        .node
+        .size_of_set()
+        .expect("palette list should report container size_of_set");
+    assert!(set_size >= 1);
+    let first_row = super::written::inside("command-palette-results")
+        .into_iter()
+        .find_map(|id| {
+            let entry = super::written::get(&id)?;
+            (entry.node.role() == Role::ListBoxOption && entry.node.position_in_set() == Some(0))
+                .then_some(entry)
+        })
+        .expect("first command palette row should have 0-based position_in_set(0)");
+    assert_eq!(first_row.node.size_of_set(), None);
+}

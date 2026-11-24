@@ -4024,6 +4024,9 @@ impl Panel {
                                                                 )
                                                             ))
                                                             .aria_selected(selected)
+                                                            .when(selected, |row| {
+                                                                row.aria_active_descendant()
+                                                            })
                                                             .cursor_pointer()
                                                             // The row is one line of the body: its two
                                                             // lines of text stand on its own surface.
@@ -4470,13 +4473,16 @@ impl Panel {
         };
         // In the patch's place, which ends with the file list.
         if self.review.preparing {
+            use crate::native_accessibility::LiveRegion as _;
             return div()
                 .flex_1()
                 .min_h_0()
                 .child(
                     label("github-preparing-file", "Preparing the selected file…")
                         .ml(super::text_inset())
-                        .role(Role::Status),
+                        .role(Role::Status)
+                        .aria_value("Preparing the selected file…")
+                        .live_region(gpui::accesskit::Live::Polite, true),
                 )
                 .into_any_element();
         }
@@ -4519,7 +4525,7 @@ impl Panel {
         crate::native_accessibility::clips_children(div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_key_down(cx.listener(Self::comment_on_return)).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
             // A context row's surface, so the strip below the rows reads as part of the patch.
             .bg(rgb(p.canvas))
-            .relative().track_focus(&self.review.line_focus).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
+            .relative().track_focus(&self.review.line_focus).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description(format!("Up and Down move through lines. Shift extends a same-side range. {} starts an inline comment. Source offers exact text selection and Find.", crate::shortcuts::ENTER))
 
             .child(div().size_full().on_children_prepainted({
                 let (scroll, rest) = (
@@ -4537,10 +4543,10 @@ impl Panel {
                         window.defer(cx, |window, _| window.refresh());
                     }
                 }
-            }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(clipped(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
+            }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(clipped(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let active=this.review.selected_row==Some(index);let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
                 // The selection's edge overlays the row, so its text keeps Source's place.
                 // Each row is a line of the body where the list shows it ([`clipped`]).
-                patch_row(index,row,column,row_height,cx).child(one_line()).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
+                patch_row(index,row,column,row_height,cx).child(one_line()).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).when(active,|row|row.aria_active_descendant()).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll).on_scroll(crate::tags::chain_uniform_list_wheel(self.review.line_scroll.clone(), self.review.line_scroll_rest.clone()))).size_full())))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
     }

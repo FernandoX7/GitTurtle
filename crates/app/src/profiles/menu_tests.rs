@@ -1594,12 +1594,20 @@ fn show_settings_held(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
 /// Lands the reads the window awaits as its own task, an Open's snapshot
 /// and the changed files it goes on to, leaving the status read to
 /// whatever holds the operation executor.
+///
+/// Draining `app.worker` before `run_until_parked` matches `views_tests::settle`:
+/// it waits on GitTurtle's passive reader thread while holding `TestClock`
+/// instead of parking `TestScheduler` across real-time Git subprocess I/O.
 async fn land_window_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     for _ in 0..8 {
         cx.executor().run_until_parked();
-        let Some(task) = cx.update(|_, cx| app.update(cx, |app, _| app.task.take())) else {
+        if !app.read_with(cx, |app, _| app.task.is_some()) {
             break;
-        };
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    cx.executor().run_until_parked();
+    if let Some(task) = cx.update(|_, cx| app.update(cx, |app, _| app.task.take())) {
         task.await;
     }
     draw(cx);

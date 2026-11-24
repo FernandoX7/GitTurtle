@@ -4264,8 +4264,7 @@ impl Panel {
                             col.child(
                                 div()
                                     .id("checkout-pr-error")
-                                    .role(Role::Alert)
-                                    .aria_label(err.clone())
+                                    .alert(err.clone())
                                     .text_size(appearance::ui_text(11.))
                                     .text_color(rgb(labels.warning))
                                     .child(err),
@@ -4474,8 +4473,7 @@ impl Panel {
                             col.child(
                                 div()
                                     .id("pr-csv-error")
-                                    .role(Role::Alert)
-                                    .aria_label(err.clone())
+                                    .alert(err.clone())
                                     .text_size(appearance::ui_text(11.))
                                     .text_color(rgb(labels.warning))
                                     .child(err),

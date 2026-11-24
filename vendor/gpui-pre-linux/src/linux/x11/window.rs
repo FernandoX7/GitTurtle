@@ -5,7 +5,7 @@ use crate::linux::X11ClientStatePtr;
 use gpui::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs, Modifiers,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Scene, Size,
     Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowDecorations, WindowKind, WindowParams, WindowVisibility, popup::PopupNotSupportedError,
     px,
@@ -1191,6 +1191,52 @@ impl X11WindowStatePtr {
             fun(request_frame_options);
             self.callbacks.borrow_mut().request_frame = Some(fun);
         }
+        self.update_ime_enabled();
+    }
+
+    pub(crate) fn accepts_text_input_and_focus(&self) -> (bool, Option<gpui::FocusId>) {
+        let mut state = self.state.borrow_mut();
+        if let Some(mut input_handler) = state.input_handler.take() {
+            drop(state);
+            let accepts = input_handler.query_accepts_text_input();
+            let focus_id = input_handler.focus_id();
+            self.state.borrow_mut().input_handler = Some(input_handler);
+            (accepts, focus_id)
+        } else {
+            (false, None)
+        }
+    }
+
+    pub(crate) fn logical_size_and_scale(&self) -> (Size<Pixels>, f32) {
+        let state = self.state.borrow();
+        (state.bounds.size, state.scale_factor)
+    }
+
+    fn update_ime_enabled(&self) {
+        let client_ptr = self.state.borrow().client.clone();
+        let Some(client) = client_ptr.get_client() else {
+            return;
+        };
+        if client.keyboard_focused_window() != Some(self.x_window) {
+            return;
+        }
+        let (ime_enabled, focus_id) = self.accepts_text_input_and_focus();
+        let (current_enabled, current_focus_id) = client.ime_state();
+
+        if !ime_enabled {
+            client.clear_ime_password();
+            if current_enabled != Some(false) {
+                client.disable_ime();
+            }
+            return;
+        }
+
+        if current_enabled != Some(true) {
+            client.enable_ime(focus_id);
+        } else if current_focus_id != focus_id {
+            client.disable_ime();
+            client.enable_ime(focus_id);
+        }
     }
 
     pub fn handle_input(&self, input: PlatformInput) {
@@ -1234,14 +1280,18 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn handle_ime_preedit(&self, text: String) {
+    pub fn handle_ime_preedit(
+        &self,
+        text: String,
+        selected_range: Option<std::ops::Range<usize>>,
+    ) {
         if self.is_blocked() {
             return;
         }
         let mut state = self.state.borrow_mut();
         if let Some(mut input_handler) = state.input_handler.take() {
             drop(state);
-            input_handler.replace_and_mark_text_in_range(None, &text, None);
+            input_handler.replace_and_mark_text_in_range(None, &text, selected_range);
             let mut state = self.state.borrow_mut();
             state.input_handler = Some(input_handler);
         }
@@ -1275,19 +1325,63 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn get_ime_area(&self) -> Option<Bounds<ScaledPixels>> {
+    pub fn get_ime_area(&self) -> Option<Bounds<Pixels>> {
         let mut state = self.state.borrow_mut();
-        let scale_factor = state.scale_factor;
         let mut bounds: Option<Bounds<Pixels>> = None;
         if let Some(mut input_handler) = state.input_handler.take() {
             drop(state);
-            if let Some(selection) = input_handler.selected_text_range(true) {
-                bounds = input_handler.bounds_for_range(selection.range);
-            }
+            bounds = input_handler.ime_candidate_bounds();
             let mut state = self.state.borrow_mut();
             state.input_handler = Some(input_handler);
         };
-        bounds.map(|b| b.scale(scale_factor))
+        bounds
+    }
+
+    pub(crate) fn sync_a11y_window_bounds(&self) {
+        let mut state = self.state.borrow_mut();
+        let scale = if state.scale_factor.is_finite() && state.scale_factor > 0.0 {
+            state.scale_factor as f64
+        } else {
+            1.0
+        };
+        let bounds = state.bounds;
+        let [left, right, top, bottom] = state.last_insets;
+
+        let x = f32::from(bounds.origin.x);
+        let y = f32::from(bounds.origin.y);
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
+
+        let x = if x.is_finite() { x as f64 * scale } else { 0.0 };
+        let y = if y.is_finite() { y as f64 * scale } else { 0.0 };
+        let width = if width.is_finite() && width > 0.0 {
+            width as f64 * scale
+        } else {
+            0.0
+        };
+        let height = if height.is_finite() && height > 0.0 {
+            height as f64 * scale
+        } else {
+            0.0
+        };
+
+        let outer = accesskit::Rect {
+            x0: x,
+            y0: y,
+            x1: x + width,
+            y1: y + height,
+        };
+
+        let inner = accesskit::Rect {
+            x0: outer.x0 + left as f64,
+            y0: outer.y0 + top as f64,
+            x1: (outer.x1 - right as f64).max(outer.x0 + left as f64),
+            y1: (outer.y1 - bottom as f64).max(outer.y0 + top as f64),
+        };
+
+        if let Some(adapter) = state.accesskit_adapter.as_mut() {
+            adapter.set_root_window_bounds(outer, inner);
+        }
     }
 
     pub fn set_bounds(&self, bounds: Bounds<i32>) -> anyhow::Result<()> {
@@ -1319,6 +1413,8 @@ impl X11WindowStatePtr {
             }
             result
         };
+
+        self.sync_a11y_window_bounds();
 
         let mut callbacks = self.callbacks.borrow_mut();
         if let Some(ref mut fun) = callbacks.resize {
@@ -1912,6 +2008,8 @@ impl PlatformWindow for X11Window {
                 ),
             )
             .log_err();
+            drop(state);
+            self.0.sync_a11y_window_bounds();
         }
     }
 
@@ -1970,10 +2068,13 @@ impl PlatformWindow for X11Window {
     }
 
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
-        let state = self.0.state.borrow();
-        let client = state.client.clone();
-        drop(state);
-        client.update_ime_position(bounds);
+        let client = self.0.state.borrow().client.clone();
+        if client
+            .get_client()
+            .is_some_and(|c| c.keyboard_focused_window() == Some(self.0.x_window))
+        {
+            client.update_ime_position(bounds);
+        }
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
@@ -1994,10 +2095,22 @@ impl PlatformWindow for X11Window {
             callback: callbacks.deactivation,
         };
 
-        let adapter =
+        let mut adapter =
             accesskit_unix::Adapter::new(activation_handler, action_handler, deactivation_handler);
 
-        self.0.state.borrow_mut().accesskit_adapter = Some(adapter);
+        {
+            let mut state = self.0.state.borrow_mut();
+            let is_focused = state.active
+                || state
+                    .client
+                    .get_client()
+                    .is_some_and(|c| c.keyboard_focused_window() == Some(self.0.x_window));
+            if is_focused {
+                adapter.update_window_focus_state(true);
+            }
+            state.accesskit_adapter = Some(adapter);
+        }
+        self.0.sync_a11y_window_bounds();
     }
 
     fn a11y_tree_update(&self, tree_update: accesskit::TreeUpdate) {
@@ -2008,33 +2121,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn a11y_update_window_bounds(&self) {
-        let mut state = self.0.state.borrow_mut();
-        let scale = state.scale_factor;
-        let bounds = state.bounds;
-        let [left, right, top, bottom] = state.last_insets;
-
-        let x = f32::from(bounds.origin.x);
-        let y = f32::from(bounds.origin.y);
-        let width = f32::from(bounds.size.width);
-        let height = f32::from(bounds.size.height);
-
-        let outer = accesskit::Rect {
-            x0: (x * scale) as f64,
-            y0: (y * scale) as f64,
-            x1: ((x + width) * scale) as f64,
-            y1: ((y + height) * scale) as f64,
-        };
-
-        let inner = accesskit::Rect {
-            x0: (x * scale) as f64 + left as f64,
-            y0: (y * scale) as f64 + top as f64,
-            x1: ((x + width) * scale) as f64 - right as f64,
-            y1: ((y + height) * scale) as f64 - bottom as f64,
-        };
-
-        if let Some(adapter) = state.accesskit_adapter.as_mut() {
-            adapter.set_root_window_bounds(outer, inner);
-        }
+        self.0.sync_a11y_window_bounds();
     }
 }
 

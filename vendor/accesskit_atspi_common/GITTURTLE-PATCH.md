@@ -15,7 +15,7 @@ match the supplemental notices in `docs/licenses/dependencies.json`.
 
 ## Changes
 
-Three files are modified: `src/node.rs`, with four changes, `src/adapter.rs`,
+Three files are modified: `src/node.rs`, with seven changes, `src/adapter.rs`,
 with three, and `src/context.rs`. No other source, manifest or dependency
 changes.
 
@@ -83,6 +83,24 @@ clipped hit-testing are maintained in `vendor/accesskit_macos`
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
 off-screen node apart has not been checked.
+
+### Expanded/Busy states, `"level"` attribute, and `LabelledBy` relation (`src/node.rs`)
+
+A GitTurtle change, not a backport: upstream `accesskit_atspi_common` 0.19.1
+omits `State::Expandable` / `State::Expanded` (even though `NodeData::is_expanded`
+exists in `accesskit_consumer` 0.38), `State::Busy` (even though `Node::is_busy`
+exists), the AT-SPI `"level"` object attribute (even though `Node::level` exists),
+and `RelationType::LabelledBy` in `PlatformNode::relation_set` (even though
+`NodeData::labelled_by` exists). Because `NodeWrapper::notify_state_changes`
+diffs `old.state(true) ^ self.state(true)`, adding `Expandable`/`Expanded` and
+`Busy` to `NodeWrapper::state` also emits `object:state-changed:expanded` and
+`object:state-changed:busy` automatically when folders, disclosures, or busy
+live regions change state. Adding `"level"` exposes Markdown heading levels and
+Navigator / Project List tree nesting depth, and `LabelledBy` connects modal
+dialogs to their title nodes.
+
+Upstream status: PR-ready parity additions; retire each once the upgraded
+`accesskit_atspi_common` release emits them natively.
 
 ### Point queries past a clip (`src/node.rs`)
 

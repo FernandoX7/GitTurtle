@@ -1719,8 +1719,7 @@ impl Render for Palette {
                             .role(Role::ListBoxOption)
                             .aria_label(row_name(&spec, named))
                             .aria_selected(selected)
-                            .aria_position_in_set(index + 1)
-                            .aria_size_of_set(this.results.len())
+                            .aria_position_in_set(index)
                             .w_full()
                             .h(crate::appearance::ui_size(54.))
                             // The list's 1 px border and this padding start
@@ -1937,6 +1936,7 @@ impl Render for Palette {
                     .debug_selector(|| "command-palette-results".into())
                     .role(Role::ListBox)
                     .aria_label("Matching commands")
+                    .aria_size_of_set(self.results.len())
                     .h(desired_height.min(available_height))
                     .overflow_hidden()
                     .border_1()

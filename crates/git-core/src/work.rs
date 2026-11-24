@@ -3444,10 +3444,8 @@ fn bounded_write_output_inner(
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = crate::process_io::spawn_child(&mut command)
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
     // A helper can create a new session and retain our pipe descriptors. Killing
     // Git's process group then cannot close those descriptors. Nonblocking I/O

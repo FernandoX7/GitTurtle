@@ -1214,4 +1214,148 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn expanded_busy_level_labelled_by_and_root_bounds_are_exposed() {
+        use crate::{ObjectEvent, PlatformNode};
+        use atspi_common::{CoordType, RelationType};
+
+        let events = Arc::new(Mutex::new(Vec::<(NodeIdOrRoot, State, bool)>::new()));
+        struct StateCallback(Arc<Mutex<Vec<(NodeIdOrRoot, State, bool)>>>);
+        impl AdapterCallback for StateCallback {
+            fn register_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}
+            fn unregister_interfaces(&self, _: &Adapter, _: NodeId, _: InterfaceSet) {}
+            fn emit_event(&self, _: &Adapter, event: Event) {
+                if let Event::Object {
+                    target,
+                    event: ObjectEvent::StateChanged(state, value),
+                } = event
+                {
+                    self.0.lock().unwrap().push((target, state, value));
+                }
+            }
+        }
+
+        let mut heading = Node::new(Role::Heading);
+        heading.set_label("Dialog title");
+        heading.set_level(2);
+
+        let mut folder = Node::new(Role::TreeItem);
+        folder.set_label("feature");
+        folder.set_expanded(false);
+        folder.set_level(1);
+
+        let mut live = Node::new(Role::Status);
+        live.set_label("Loading…");
+        live.set_busy();
+
+        let mut dialog = Node::new(Role::Dialog);
+        dialog.set_labelled_by(vec![LocalNodeId(1)]);
+        dialog.set_children(vec![LocalNodeId(1), LocalNodeId(2), LocalNodeId(3)]);
+
+        let initial = TreeUpdate {
+            nodes: vec![
+                (
+                    LocalNodeId(0),
+                    with_children(Role::Window, &[LocalNodeId(4)]),
+                ),
+                (LocalNodeId(1), heading),
+                (LocalNodeId(2), folder),
+                (LocalNodeId(3), live),
+                (LocalNodeId(4), dialog),
+            ],
+            tree: Some(Tree::new(LocalNodeId(0))),
+            tree_id: TreeId::ROOT,
+            focus: LocalNodeId(2),
+        };
+
+        let app_context = AppContext::new(None);
+        let mut adapter = Adapter::new(
+            &app_context,
+            StateCallback(events.clone()),
+            initial,
+            true,
+            WindowBounds::default(),
+            NoOpActionHandler,
+        );
+
+        let platform = |local: LocalNodeId| {
+            fn find(node: accesskit_consumer::Node<'_>, want: LocalNodeId) -> Option<NodeId> {
+                if node.tree_state.locate_node(node.id()) == Some((want, TreeId::ROOT)) {
+                    return Some(node.id());
+                }
+                for child in node.children() {
+                    if let Some(id) = find(child, want) {
+                        return Some(id);
+                    }
+                }
+                None
+            }
+            let tree = adapter.context.read_tree();
+            let id = find(tree.state().root(), local).expect("node exists");
+            PlatformNode::new(&adapter.context, adapter.id(), id)
+        };
+
+        // Folder starts collapsed: Expandable without Expanded, level="1".
+        let folder_node = platform(LocalNodeId(2));
+        let folder_state = folder_node.state();
+        assert!(folder_state.contains(State::Expandable));
+        assert!(!folder_state.contains(State::Expanded));
+        assert_eq!(
+            folder_node.attributes().unwrap().get("level").map(String::as_str),
+            Some("1")
+        );
+
+        // Heading exposes level="2".
+        let heading_node = platform(LocalNodeId(1));
+        assert_eq!(
+            heading_node.attributes().unwrap().get("level").map(String::as_str),
+            Some("2")
+        );
+
+        // Live region starts Busy.
+        let live_node = platform(LocalNodeId(3));
+        assert!(live_node.state().contains(State::Busy));
+
+        // Dialog exposes RelationType::LabelledBy pointing to heading.
+        let dialog_node = platform(LocalNodeId(4));
+        let relations = dialog_node.relation_set(|id| id).unwrap();
+        let heading_id = heading_node.id();
+        assert_eq!(
+            relations.get(&RelationType::LabelledBy),
+            Some(&vec![heading_id])
+        );
+
+        // Updating expanded=true and clearing busy emits StateChanged events.
+        events.lock().unwrap().clear();
+        let mut expanded_folder = Node::new(Role::TreeItem);
+        expanded_folder.set_label("feature");
+        expanded_folder.set_expanded(true);
+        expanded_folder.set_level(1);
+        let mut idle_live = Node::new(Role::Status);
+        idle_live.set_label("Loaded");
+        adapter.update(update(vec![
+            (LocalNodeId(2), expanded_folder),
+            (LocalNodeId(3), idle_live),
+        ]));
+        assert!(folder_node.state().contains(State::Expandable));
+        assert!(folder_node.state().contains(State::Expanded));
+        assert!(!live_node.state().contains(State::Busy));
+        let recorded = events.lock().unwrap();
+        assert!(recorded.contains(&(NodeIdOrRoot::Node(folder_node.id()), State::Expanded, true)));
+        assert!(recorded.contains(&(NodeIdOrRoot::Node(live_node.id()), State::Busy, false)));
+        drop(recorded);
+
+        // Setting root window bounds makes Frame extents valid.
+        let root_rect = accesskit::Rect {
+            x0: 10.0,
+            y0: 20.0,
+            x1: 810.0,
+            y1: 620.0,
+        };
+        adapter.set_root_window_bounds(WindowBounds::new(root_rect, root_rect));
+        let root_node = PlatformNode::new(&adapter.context, adapter.id(), adapter.root_id());
+        let extents = root_node.extents(CoordType::Screen).unwrap();
+        assert_eq!((extents.x, extents.y, extents.width, extents.height), (10, 20, 800, 600));
+    }
 }

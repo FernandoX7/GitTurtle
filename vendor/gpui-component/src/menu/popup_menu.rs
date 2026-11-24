@@ -2737,6 +2737,7 @@ impl Render for PopupMenu {
             .id("popup-menu")
             .test_support()
             .role(Role::Menu)
+            .aria_label("Menu")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::select_up))
@@ -2768,7 +2769,11 @@ impl Render for PopupMenu {
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
                     .max_w(max_width)
                     .when(self.scrollable, |this| {
-                        this.max_h(column.unwrap_or(max_height))
+                        this.role(Role::ScrollView)
+                            .a11y_synthetic_children(|builder| {
+                                builder.parent_node().set_clips_children();
+                            })
+                            .max_h(column.unwrap_or(max_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
                             .on_scroll(cx.listener(Self::rows_scrolled))

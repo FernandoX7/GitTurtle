@@ -53,13 +53,16 @@ pub fn linux_platform(allowed_modes: WindowingModes) -> Rc<dyn gpui::Platform> {
     Rc::new(LinuxPlatform::new(allowed_modes))
 }
 
-/// Updates the active Wayland `zwp_text_input_v3` content type between password
-/// (`ContentHint::SensitiveData` + `ContentPurpose::Password`) and normal text.
-/// No-op on X11 or headless connections.
+/// Updates the active Linux IME content type between password
+/// (`ContentHint::SensitiveData | ContentHint::HiddenText` +
+/// `ContentPurpose::Password` on Wayland; suspended XIM forwarding on X11)
+/// and normal text. No-op on headless connections.
 pub fn set_wayland_ime_password(password: bool) {
     #[cfg(feature = "wayland")]
     wayland::set_wayland_ime_password(password);
-    #[cfg(not(feature = "wayland"))]
+    #[cfg(feature = "x11")]
+    x11::set_x11_ime_password(password);
+    #[cfg(not(any(feature = "wayland", feature = "x11")))]
     let _ = password;
 }
 
