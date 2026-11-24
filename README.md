@@ -46,7 +46,7 @@
 ## Why GitTurtle
 
 - **Instant feel, even on huge repos.** Built in Rust with native GPU rendering and background workers, so commits, diffs and scrolling stay smooth across dozens of worktrees — keeping history bounded to **5,000 rows** or **64 MiB** however far you page.
-- **Everyday power, zero clutter.** Deep history filters, right-click menus, line- and hunk-level staging and discard, interactive rebase, contextual bisect, conflict resolution, submodules and native GitHub PR review — right where you expect them, hidden until you need them.
+- **Everyday power, zero clutter.** Deep history filters, Shift-click commit-range compare, right-click menus, line- and hunk-level staging and discard, drag-to-reorder interactive rebase, contextual bisect, conflict resolution, submodules and native GitHub PR review — right where you expect them, hidden until you need them.
 - **Your repo stays yours.** Browsing is 100% local and read-only — it never fetches behind your back. Writes happen only when you click, guard against quitting mid-operation, and keep your real Git hooks, signing and credentials.
 - **At home on your OS.** Native menu bar, Dock, Quick Look and Keychain on macOS; native Wayland/X11 and zero-config live [Omarchy](https://omarchy.org/) themes and fonts on Linux.
 
@@ -62,11 +62,12 @@ Real `--release` timings on Apple Silicon hardware (excluding display presentati
 | Select a commit → changed files ready | **21.2 ms** | Apple M4 Max · 653-commit repo ([record](docs/benchmarks/2026-09-08-everyday-workflows.md)) |
 | Open a file from history → diff ready | **4.9 ms** | Apple M4 Max · 653-commit repo ([record](docs/benchmarks/2026-09-08-everyday-workflows.md)) |
 | Scroll a 3,000-commit history *(UI CPU / notch)* | **8.2 ms** | Apple M2 Pro · Linux ([record](docs/benchmarks/2026-10-27-compact-chrome-history-scroll.md)) |
-| Open repository metadata | **1.4 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-22-wave3a-performance-wins.md)) |
-| Check working-tree status | **1.8 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-22-wave3a-performance-wins.md)) |
-| Load the next 500 commits in a 120k history | **0.5 ms** | Apple M4 Max · backend ([record](docs/benchmarks/2026-09-10-history-pagination.md)) |
+| Load the next 500 commits in a 120k history | **0.5 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-24-pre10-release-benchmarks.md)) |
+| Select changed files across a 120k history | **0.8 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-24-pre10-release-benchmarks.md)) |
+| Check working-tree status *(demo repo)* | **1.8 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-24-pre10-release-benchmarks.md)) |
+| Selective filter over 50,000 cached History / Working paths | **0.6–0.8 ms** | Apple M2 Pro · app CPU ([record](docs/benchmarks/2026-11-24-pre10-release-benchmarks.md)) |
+| Prepare intraline diffs on a 20,000-line split diff | **2.4 ms** | Apple M2 Pro · app CPU ([record](docs/benchmarks/2026-11-24-pre10-release-benchmarks.md)) |
 | Quick Open across 12,000 tracked files *(5 queries)* | **4.6 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-22-wave3b-monorepo-scalability.md)) |
-| Capture 20 embedded Markdown image blobs | **2.9 ms** | Apple M2 Pro · backend ([record](docs/benchmarks/2026-11-22-wave3b-monorepo-scalability.md)) |
 
 <sub>Each figure belongs to the build and repository in its record. See [architecture](docs/architecture.md) for how background lanes, monorepo bounds and isolated preview decoders work under the hood.</sub>
 
@@ -247,7 +248,7 @@ See the [macOS guide](docs/user-guide.md#package-locally-on-macos) and [Linux gu
 
 Full build logs and honest caveats live in [validation](docs/validation.md), [current limits](docs/user-guide.md#current-limits), and [Linux limits](docs/linux.md#platform-limits).
 
-**Good to know today:** builds are unsigned pre-release packages (with 7-day Linux [CI test artifacts](docs/ci-artifacts.md#find-and-verify-a-download) and in-repo [`packaging/aur`](packaging/aur/README.md)/`.deb`/Flatpak recipes); HEIC and full Quick Look require macOS; Linux screen-reader/IME support is partial; and live PR commenting/merging on Linux plus live GitHub sign-in on macOS are awaiting physical checks.
+**Good to know today:** builds are unsigned pre-release packages (with 7-day Linux [CI test artifacts](docs/ci-artifacts.md#find-and-verify-a-download) and in-repo [`packaging/aur`](packaging/aur/README.md)/`.deb`/Flatpak recipes); HEIC and full Quick Look require macOS; Linux Wayland/X11 IME and AT-SPI accessibility parity is covered by automated checks with live Orca/`fcitx5`/`IBus` desktop sessions still pending; and live PR commenting/merging on Linux plus live GitHub sign-in on macOS are awaiting physical checks.
 
 ---
 

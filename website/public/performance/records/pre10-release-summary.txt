@@ -1,0 +1,41 @@
+Pre-1.0 Release Benchmarks on Apple M2 Pro (Omarchy Linux ARM64) — 24 November 2026
+
+Build: 07a1492d42d1ffaaeb9d3c2561c8200f019f4800 (source_tree: clean, release, aarch64-unknown-linux-gnu)
+Toolchain: rustc 1.100.0 (0ef1bc386 2026-11-09), git version 2.56.0
+Machine: Apple M2 Pro, Linux 7.2.11-14-1-ARCH (aarch64), pinned to P-cores 4-11 (3.50 GHz)
+Quiet slot: scripts/dev/build_slot.py quiet-on (session 08:05Z-08:17Z; wrapper load average 2.06 -> 2.51)
+
+Packaged Linux ARM64 release footprint (scripts/package-linux.sh):
+  Raw binary (gitturtle):            106.83 MiB (112,018,872 B)  sha256 90a4ac58...
+  Packaged tarball (.tar.gz):         32.42 MiB ( 33,992,746 B)  sha256 9ecd6386...
+  exec --build-info (n=25):           p50 2.093 ms, p95 3.063 ms
+
+Core Git backend (disposable demo repository, everyday_bench --release, n=20):
+  Passive working status:             p50 1.785 ms, p95 1.940 ms
+  Staged working preview:             p50 0.669 ms, p95 0.872 ms
+  Unstaged working preview:           p50 0.735 ms, p95 0.914 ms
+  Pinned history search:              p50 0.900 ms, p95 1.077 ms
+  File history (rename-following):    p50 1.318 ms, p95 1.669 ms
+  Changed files (no / with renames):  p50 0.952 / 0.966 ms, p95 1.286 / 1.448 ms
+
+120,000-commit linear history (history_pagination_bench --release, 3 passes x 200 pages):
+  Incremental subsequent 500 commits: p50 0.535 ms, p95 0.606 ms (n=597)
+  Initial 500-commit walk:            p50 438.869 ms (n=3)
+  Stream cancel (incl. kill + reap):  p50 2.200 ms, p95 2.229 ms (n=20)
+  Changed-file selection in 120k:     p50 0.796 ms, p95 1.321 ms (n=40)
+
+Worker, diff preparation (20k lines) & 50,000-path filtering (--release):
+  Worker open snapshot (200 commits): p50 4.869 ms, p95 5.386 ms (n=60)
+  Working state read (300 files):     p50 6.543 ms, p95 7.870 ms (n=60)
+  Explicit stage / unstage (core):    p50 2.575 / 3.182 ms (n=60)
+  Patch / split intraline (20k):      p50 1.496 / 2.421 ms (n=40)
+  Selective filter over 50k paths:    p50 0.728 ms history, 0.585 ms working flat, 0.769 ms grouped (n=40)
+
+Headless GPUI UI-thread & accessibility benchmarks (TestAppContext --release; excludes GPU/compositor):
+  Quiet landing (5k commits/3,001 branches, n=40): p50 1.420 ms (500 rows) / 1.263 ms (5,000 rows), 0 redraws
+  Unified / split diff scroll (13pt, n=60):        p50 0.799 / 1.531 ms (2,400 changed lines; layout+paint)
+  PR review file select (7.95 MiB, n=60):          p50 0.216 ms after prep / 0.0004 ms while preparing (handler only)
+  Accessible text runs (no D-Bus/paint, n=200):    0.083 us pooled p50 off (n=6,600, max 4.750 us); 7.21 us on (2 KB redraw)
+
+Full methodology, artifact SHA-256 digests, and per-series boundaries:
+  docs/benchmarks/2026-11-24-pre10-release-benchmarks.md
