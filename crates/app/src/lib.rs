@@ -37,6 +37,8 @@ pub(crate) use gitturtle_github as github;
 mod github_view;
 mod graph;
 mod history_paging;
+#[cfg(test)]
+mod history_range_tests;
 mod history_search;
 mod history_updates;
 mod ignore;
@@ -339,7 +341,7 @@ enum NavRow {
     Submodule(usize),
     Worktree(usize),
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkspaceMode {
     History,
     Compare,
@@ -408,6 +410,27 @@ impl BranchInputScope {
     }
 }
 
+/// A two-endpoint commit comparison range selected directly in History via
+/// Shift+Click or Shift+Up/Down. Endpoints are stored by OID so paging,
+/// sorting, quiet refreshes, or tab switches never misidentify them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryRange {
+    /// Commit where the range selection began (anchor for further Shift+Click / Shift+Up/Down).
+    pub(crate) anchor_oid: String,
+    /// Active moving endpoint (most recently clicked or stepped to).
+    pub(crate) target_oid: String,
+    /// "Before" revision passed to `compare_revisions` (older commit by default, flipped when swapped).
+    pub(crate) before_oid: String,
+    /// "After" revision passed to `compare_revisions` (newer commit by default, flipped when swapped).
+    pub(crate) after_oid: String,
+    pub(crate) before_subject: String,
+    pub(crate) after_subject: String,
+    /// Inclusive visible row count between endpoints when selected (at least 2).
+    pub(crate) commit_count: usize,
+    /// Whether the user inverted comparison direction with Swap.
+    pub(crate) swapped: bool,
+}
+
 /// Per-repository tab state owned by the active window and swapped cleanly into
 /// [`repository_tabs::WarmTab`] on tab switch. Window-level chrome, executors,
 /// focus handles, and active inspection widgets stay directly on [`GitTurtle`].
@@ -427,6 +450,7 @@ pub(crate) struct RepositoryWorkspace {
     pub(crate) submodules: Vec<gitturtle_core::SubmoduleSummary>,
     pub(crate) worktrees: Vec<Worktree>,
     pub(crate) selected_compare_commit: Option<String>,
+    pub(crate) history_range: Option<HistoryRange>,
     pub(crate) nav_rows: Vec<NavRow>,
     pub(crate) nav_ids: Vec<ElementId>,
     pub(crate) nav_mode: NavMode,
@@ -483,6 +507,7 @@ impl RepositoryWorkspace {
             submodules: Vec::new(),
             worktrees: Vec::new(),
             selected_compare_commit: None,
+            history_range: None,
             nav_rows: Vec::new(),
             nav_ids: Vec::new(),
             nav_mode: NavMode::Local,
@@ -1660,6 +1685,7 @@ impl GitTurtle {
         self.stashes.clear();
         self.submodules.clear();
         self.selected_compare_commit = None;
+        self.history_range = None;
         self.worktrees.clear();
         self.nav_rows.clear();
         self.nav_ids.clear();
@@ -1683,6 +1709,7 @@ impl GitTurtle {
         self.file_paths.reset();
         self.selected_file = None;
         self.selected_commit = None;
+        self.history_range = None;
         self.commits.clear();
         self.visible.clear();
         self.graph.clear();
@@ -1786,9 +1813,47 @@ impl GitTurtle {
                     self.prepare_editor(false, window, cx);
                 }
             }
-            Output::RevisionComparison(_)
-            | Output::RevisionTargets(_)
-            | Output::TrackedPaths(_) => {} // Modal-owned read results.
+            Output::RevisionComparison(comparison) => {
+                if !matches!(self.mode, WorkspaceMode::History | WorkspaceMode::Compare)
+                    || self.revision_inspection.is_active()
+                    || self.file_history.is_active()
+                {
+                    return;
+                }
+                let matches_range = self.history_range.as_ref().is_some_and(|range| {
+                    range.before_oid == comparison.before.oid
+                        && range.after_oid == comparison.after.oid
+                });
+                if !matches_range {
+                    return;
+                }
+                self.status = format!(
+                    "{} · {}..{}",
+                    changed_files(comparison.files.len()),
+                    short_oid(&comparison.before.oid),
+                    short_oid(&comparison.after.oid),
+                );
+                self.files = comparison.files;
+                self.refresh_file_filter(window, cx);
+                if !self.files.is_empty() {
+                    let index = self
+                        .preferred_file
+                        .as_ref()
+                        .and_then(|path| self.files.iter().position(|f| f.path() == path))
+                        .unwrap_or(0);
+                    self.file_scroll
+                        .scroll_to_item(index, ScrollStrategy::Center);
+                    self.selected_file = Some(index);
+                    self.preferred_file = Some(self.files[index].path().to_owned());
+                    if self.mode == WorkspaceMode::Compare {
+                        self.load_file(index, window, cx);
+                    }
+                }
+                if self.mode == WorkspaceMode::History {
+                    self.trace_frame("commit_files_frame_ms", window, cx);
+                }
+            }
+            Output::RevisionTargets(_) | Output::TrackedPaths(_) => {} // Modal-owned read results.
             Output::Blame(_)
             | Output::LineHistory(_)
             | Output::SearchHistory(_)
@@ -1832,6 +1897,7 @@ impl GitTurtle {
                 self.stashes = snapshot.stashes;
                 self.submodules = snapshot.submodules;
                 self.selected_compare_commit = None;
+                self.history_range = None;
                 self.seed_navigation_folders();
                 self.worktrees = snapshot.worktrees;
                 self.commits = snapshot.commits;
@@ -2551,6 +2617,11 @@ impl GitTurtle {
         }
         if was_working
             && self.files.is_empty()
+            && let Some(range) = self.history_range.clone()
+        {
+            self.request_history_range_changes(&range, window, cx);
+        } else if was_working
+            && self.files.is_empty()
             && let (Some(repo), Some(commit)) = (
                 &self.repository,
                 self.selected_commit.and_then(|i| self.commits.get(i)),
@@ -2603,10 +2674,13 @@ impl GitTurtle {
         if index >= self.commits.len() {
             return;
         }
+        self.history_range = None;
+        self.selected_compare_commit = None;
         self.interaction_started = Some(Instant::now());
         self.preferred_file = self
             .selected_file
-            .map(|i| self.files[i].path().to_owned())
+            .and_then(|i| self.files.get(i))
+            .map(|f| f.path().to_owned())
             .or_else(|| self.preferred_file.take());
         self.inspector_message.select(&self.commits[index].oid, cx);
         self.selected_commit = Some(index);
@@ -2632,6 +2706,242 @@ impl GitTurtle {
         } else {
             self.clear_commit_signature();
         }
+    }
+
+    /// Selects or extends a two-endpoint History commit range from the current
+    /// anchor commit to `target_index`, loading passive endpoint diff metadata
+    /// via `Job::CompareRevisions` without eagerly opening Compare.
+    pub(crate) fn select_history_range(
+        &mut self,
+        target_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_blame(window, cx);
+        self.close_inspections(window, cx);
+        if self.mode == WorkspaceMode::Working {
+            self.mode = WorkspaceMode::History;
+            self.working_selected = None;
+        }
+        let Some(target_commit) = self.commits.get(target_index).cloned() else {
+            return;
+        };
+        let anchor_oid = self
+            .history_range
+            .as_ref()
+            .map(|range| range.anchor_oid.clone())
+            .or_else(|| {
+                self.selected_commit
+                    .and_then(|index| self.commits.get(index))
+                    .map(|commit| commit.oid.clone())
+            });
+        let Some(anchor_oid) = anchor_oid else {
+            self.select_commit(target_index, window, cx);
+            return;
+        };
+        if anchor_oid == target_commit.oid {
+            self.selected_compare_commit = None;
+            if self.history_range.is_some() {
+                self.select_commit(target_index, window, cx);
+            } else {
+                cx.notify();
+            }
+            return;
+        }
+        let Some(anchor_index) = self
+            .commits
+            .iter()
+            .position(|commit| commit.oid == anchor_oid)
+        else {
+            self.select_commit(target_index, window, cx);
+            return;
+        };
+        let anchor_commit = &self.commits[anchor_index];
+        let anchor_pos = self.visible.iter().position(|&i| i == anchor_index);
+        let target_pos = self.visible.iter().position(|&i| i == target_index);
+        // History lists newer commits first (smaller visible index) and older
+        // commits lower (larger index). Default to older..newer.
+        let (before_commit, after_commit, commit_count) = match (anchor_pos, target_pos) {
+            (Some(a_pos), Some(t_pos)) => {
+                let count = a_pos.abs_diff(t_pos) + 1;
+                if a_pos > t_pos {
+                    (anchor_commit, &target_commit, count)
+                } else {
+                    (&target_commit, anchor_commit, count)
+                }
+            }
+            _ => {
+                // When an endpoint was evicted/retained outside `visible`,
+                // fall back to commit timestamps rather than raw `commits`
+                // index (retained commits are appended at the end of `commits`).
+                if anchor_commit.timestamp <= target_commit.timestamp {
+                    (anchor_commit, &target_commit, 2)
+                } else {
+                    (&target_commit, anchor_commit, 2)
+                }
+            }
+        };
+        let range = HistoryRange {
+            anchor_oid,
+            target_oid: target_commit.oid.clone(),
+            before_oid: before_commit.oid.clone(),
+            after_oid: after_commit.oid.clone(),
+            before_subject: commit_message::summary(&gitturtle_core::strip_bidi_controls(
+                &before_commit.subject,
+            )),
+            after_subject: commit_message::summary(&gitturtle_core::strip_bidi_controls(
+                &after_commit.subject,
+            )),
+            commit_count,
+            swapped: false,
+        };
+        self.selected_compare_commit = None;
+        self.selected_commit = Some(target_index);
+        self.reveal_graph_lane(target_index);
+        self.clear_commit_signature();
+        self.apply_history_range(range, window, cx);
+    }
+
+    fn apply_history_range(
+        &mut self,
+        range: HistoryRange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.interaction_started = Some(Instant::now());
+        self.preferred_file = self
+            .selected_file
+            .and_then(|i| self.files.get(i))
+            .map(|f| f.path().to_owned())
+            .or_else(|| self.preferred_file.take());
+        self.history_range = Some(range.clone());
+        self.files.clear();
+        self.file_paths.reset();
+        self.selected_file = None;
+        self.clear_preview();
+        self.request_history_range_changes(&range, window, cx);
+    }
+
+    pub(crate) fn request_history_range_changes(
+        &mut self,
+        range: &HistoryRange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(repo) = &self.repository {
+            self.request(
+                Job::CompareRevisions {
+                    repo: repo.clone(),
+                    before: range.before_oid.clone(),
+                    after: range.after_oid.clone(),
+                    mode: gitturtle_core::ComparisonMode::Endpoints,
+                },
+                "Comparing commits…",
+                window,
+                cx,
+            );
+        }
+    }
+
+    pub(crate) fn swap_history_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut range) = self.history_range.clone() else {
+            return;
+        };
+        std::mem::swap(&mut range.before_oid, &mut range.after_oid);
+        std::mem::swap(&mut range.before_subject, &mut range.after_subject);
+        range.swapped = !range.swapped;
+        self.apply_history_range(range, window, cx);
+    }
+
+    pub(crate) fn clear_history_range(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(range) = self.history_range.take() else {
+            return;
+        };
+        let target = self
+            .selected_commit
+            .filter(|&index| index < self.commits.len())
+            .or_else(|| {
+                self.commits
+                    .iter()
+                    .position(|commit| commit.oid == range.target_oid)
+            })
+            .or_else(|| {
+                self.commits
+                    .iter()
+                    .position(|commit| commit.oid == range.anchor_oid)
+            })
+            .or_else(|| self.visible.first().copied());
+        if let Some(index) = target {
+            self.select_commit(index, window, cx);
+        } else {
+            self.files.clear();
+            self.file_paths.reset();
+            self.selected_file = None;
+            self.clear_preview();
+            cx.notify();
+        }
+        if self.mode == WorkspaceMode::History {
+            self.pane = Pane::History;
+            window.focus(&self.focus, cx);
+        } else if self.mode == WorkspaceMode::Compare {
+            self.focus_compare_files(window, cx);
+        }
+    }
+
+    pub(crate) fn changed_file_revision(&self, file: &FileChange) -> Option<String> {
+        if let Some(range) = &self.history_range {
+            return Some(if file.new_oid.is_some() {
+                range.after_oid.clone()
+            } else {
+                range.before_oid.clone()
+            });
+        }
+        self.selected_commit
+            .and_then(|index| self.commits.get(index))
+            .map(|commit| commit.oid.clone())
+    }
+
+    pub(crate) fn can_extend_history_range(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.page == AppPage::Repository
+            && self.mode == WorkspaceMode::History
+            && !window.has_active_dialog(cx)
+            && !window.has_active_sheet(cx)
+            && !window.has_focused_input(cx)
+            && !self.blame.is_visible()
+            && !self.file_history.is_active()
+            && !self.revision_inspection.is_active()
+            && self.focus.is_focused(window)
+            && !self.visible.is_empty()
+    }
+
+    pub(crate) fn extend_history_range(
+        &mut self,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let Some(current) = self
+            .selected_commit
+            .and_then(|selected| self.visible.iter().position(|&i| i == selected))
+        else {
+            self.select_commit(self.visible[0], window, cx);
+            self.history_scroll.scroll_to_item(0, ScrollStrategy::Top);
+            return;
+        };
+        let next = if down {
+            (current + 1).min(self.visible.len() - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        if next == current {
+            return;
+        }
+        self.select_history_range(self.visible[next], window, cx);
+        self.history_scroll
+            .scroll_to_item(next, ScrollStrategy::Center);
     }
 
     pub(crate) fn clear_commit_signature(&mut self) {
@@ -3273,11 +3583,19 @@ impl GitTurtle {
         );
     }
     /// The revision pair a changed file's comparison is read against, for
-    /// the documents it shows: File history's or an inspection's, else the
-    /// selected commit and its compared parent.
+    /// the documents it shows: File history's, an inspection's, or an active
+    /// History commit range's, else the selected commit and its compared parent.
     fn preview_origins(&self) -> markdown_view::Origins {
         self.file_history_preview_origins()
             .or_else(|| self.inspection_preview_origins())
+            .or_else(|| {
+                self.history_range.as_ref().map(|range| {
+                    markdown_view::Origins::revisions(
+                        Some(range.before_oid.clone()),
+                        Some(range.after_oid.clone()),
+                    )
+                })
+            })
             .unwrap_or_else(|| {
                 let commit = self
                     .selected_commit
@@ -3550,6 +3868,10 @@ impl GitTurtle {
         if !on_history {
             self.back_to_history(window, cx);
             self.repaint_page(window, cx);
+            return;
+        }
+        if self.history_range.is_some() {
+            self.clear_history_range(window, cx);
             return;
         }
         self.clear_history_search(window, cx);

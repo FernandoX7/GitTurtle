@@ -69,7 +69,7 @@ On Linux desktops running [Omarchy](https://github.com/omacom/omarchy), **Settin
 
 **Activity…** (Command-Shift-A) records the latest 200 GitTurtle operations locally, including their target and result. It excludes arbitrary hook/server diagnostics from retained history and does not claim to cover other tools. **Local reflog & recovery…** inspects local reflog entries and can create a new branch at an available commit without checking it out. Expired entries or missing objects cannot always be recovered.
 
-**Edit local commits…** prepares up to 100 commits from one linear sequence. Reorder with the controls or Option-Up/Down and choose Pick, Reword, Squash, Fixup, or Drop. The reviewed plan pins the branch, base, commits, and clean work state; it warns about known remote-tracking containment. Message pauses, conflicts, Continue, and Abort use native workflows while preserving configured hooks/signing. Merge-preserving plans remain unsupported. See [interactive rebase](interactive-rebase.md) and [conflict blocks](conflict-blocks.md).
+**Edit local commits…** prepares up to 100 commits from one linear sequence. Drag rows directly inside the sequence or use the move controls and Option-Up/Down (Alt+Up/Down on Linux) to reorder, and choose Pick, Reword, Edit, Squash, Fixup, or Drop. The reviewed plan pins the branch, base, commits, and clean work state; it warns about known remote-tracking containment. Message pauses, conflicts, Continue, and Abort use native workflows while preserving configured hooks/signing. Merge-preserving plans remain unsupported. See [interactive rebase](interactive-rebase.md) and [conflict blocks](conflict-blocks.md).
 
 A missing LFS preview offers **Download Before…** or **Download After…**. Review the exact file, object, configured source, and size before downloading that one object. GitTurtle verifies size and SHA-256 before displaying it; the action leaves working files and the index unchanged. Resolved LFS text keeps whole-file staging because Git still stores its pointer. See [LFS previews and download limits](lfs-previews.md).
 
@@ -79,7 +79,7 @@ History fills the center of the window. Repository navigation sits on the left; 
 
 The inspector shows the complete wrapped commit title and available body immediately, followed by author/date and parent details. **Copy message** copies the complete loaded title and body; **Hash** copies the full commit ID. Drag across the message, or on into the author, date and hash lines below it, to select text, double-click to select a word, and press Command-C (Ctrl+C on Linux) to copy exactly what is selected; Command-A (Ctrl+A) in the focused message selects the whole message. Long messages have their own scrollbar while changed files stay available, and a drag past the message's edge scrolls it. Focus the message to use arrow keys, Page Up/Down or Home/End. When the History list or the changed-file list has keyboard focus (click it or Tab to it) and no text is selected, Command-C copies its highlighted commit's full hash or file's repository path; a highlighted row in a list without focus is not enough. Compare/Back and retained tabs preserve the message position; choosing another commit starts at the top. File History uses the same message view and keeps revision controls and before/after paths; with its revision list focused, Command-C copies the highlighted revision's full hash.
 
-Selecting a commit updates its details and file list while staying in History. Initially highlighting the preferred or first file does not prepare its preview. Click a changed file, or press Enter to open the highlighted file from History or the file list, to enter Compare: the file fills the center height, navigation collapses to a compact rail, and the same inspector and file list remain on the right. Select another file there to continue comparing.
+Selecting a commit updates its details and file list while staying in History. Shift-click a second commit, or press Shift-Up/Down while the commit list has focus, to compare the two endpoints directly (`Comparing <old>..<new>`): the inspector shows the commit count, endpoint subjects, **Swap**, **Clear** (or Escape), and passive changed files between those revisions without opening Compare eagerly. Activating any changed file opens Compare across that exact range, and **Back** returns to History with the range retained; an ordinary click or Up/Down navigation returns seamlessly to single-commit inspection. Initially highlighting the preferred or first file does not prepare its preview. Click a changed file, or press Enter to open the highlighted file from History or the file list, to enter Compare: the file fills the center height, navigation collapses to a compact rail, and the same inspector and file list remain on the right. Select another file there to continue comparing.
 
 **Back to history** returns to the retained graph, selected commit, scope, search, loaded history, and scroll position. Returning does not reopen the repository or reload its history. File content is loaded on explicit activation; revisiting content can reuse the bounded preview cache.
 
@@ -152,7 +152,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Command-Shift-C | Compare local revisions |
 | Command-Shift-A | Open local operation activity |
 | Option-Up / Option-Down in a text preview | Previous / next change |
-| Shift-Up / Shift-Down in the file list | Extend file selection |
+| Shift-Up / Shift-Down in History or the file list | Extend a History commit comparison range or Working Changes file selection |
 | Command-A in the Working Changes file list | Select visible file rows |
 | Space in a Working Changes diff | Select the changed line under the caret, or every changed line you selected, for **Stage N lines**; press again to clear them. Shift-Up / Shift-Down extend the selection, and Tab moves to the action |
 | Command-1 / Command-2 | Open History / Working Changes |
@@ -163,7 +163,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Command-Return (Ctrl+Enter on Linux) | Commit staged changes from the Working Changes composer |
 | Command-F in the history or file list | Focus repository history search |
 | Command-F in a text preview | Open the editor's text search |
-| Escape | Close the active transient view or editor search first; otherwise return from Compare to retained History or clear focused history search |
+| Escape | Cancel an active row drag in Interactive Rebase or close the active transient view or editor search first; otherwise return from Compare to retained History, clear an active History commit range, or clear focused history search |
 | Up / Down | Select the previous / next commit in history, or open the previous / next file in the focused file list |
 | Home / End | Select the first / last commit in history, or open the first / last file in the focused file list |
 | Enter | Open the highlighted file in Compare, from History or the file list |
