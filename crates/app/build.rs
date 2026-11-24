@@ -92,16 +92,23 @@ fn main() {
                 .unwrap_or_default()
                 .as_secs()
         });
+    let profile = env::var("PROFILE").expect("Cargo profile");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if profile == "release" && matches!(target_os.as_str(), "linux" | "macos") {
+        // Strip input local (`STB_LOCAL`) symbols on ELF (including AArch64
+        // `$d`/`$x` mapping symbols, `GCC_except_table*`, and `static` helpers)
+        // and non-global symbols on Mach-O while keeping `.symtab` and all
+        // global/weak symbols intact for `scripts/package-linux.sh`'s
+        // static-dav1d audit and release crash diagnostics.
+        println!("cargo:rustc-link-arg-bin=gitturtle=-Wl,-x");
+    }
     emit("GITTURTLE_BUILD_REVISION", &revision);
     emit("GITTURTLE_BUILD_TREE", tree);
     emit(
         "GITTURTLE_BUILD_TARGET",
         &env::var("TARGET").expect("Cargo target"),
     );
-    emit(
-        "GITTURTLE_BUILD_PROFILE",
-        &env::var("PROFILE").expect("Cargo profile"),
-    );
+    emit("GITTURTLE_BUILD_PROFILE", &profile);
     emit("GITTURTLE_BUILD_RUSTC", &rustc);
     emit("GITTURTLE_BUILD_TIME", &built_at.to_string());
 }

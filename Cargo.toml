@@ -45,9 +45,50 @@ opt-level = 2
 debug = false
 
 [profile.release]
+opt-level = "s"
 lto = "thin"
-codegen-units = 8
+codegen-units = 1
 strip = "debuginfo"
+
+# Keep UI framework, app, Git, diff, text-shaping, syntax-runtime, and raster/image
+# hot paths at -O3 while cold D-Bus, shader-compiler, component-library, and grammar
+# crates optimize for size (-Os).
+[profile.release.package.gitturtle]
+opt-level = 3
+[profile.release.package.gitturtle-core]
+opt-level = 3
+[profile.release.package.gitturtle-diff-model]
+opt-level = 3
+[profile.release.package.gitturtle-preview]
+opt-level = 3
+[profile.release.package.gpui-pre]
+opt-level = 3
+[profile.release.package.gpui-pre-apple]
+opt-level = 3
+[profile.release.package.gpui-pre-macos]
+opt-level = 3
+[profile.release.package.gpui-pre-wgpu]
+opt-level = 3
+[profile.release.package.similar]
+opt-level = 3
+[profile.release.package.tree-sitter]
+opt-level = 3
+[profile.release.package.cosmic-text]
+opt-level = 3
+[profile.release.package.swash]
+opt-level = 3
+[profile.release.package.tiny-skia]
+opt-level = 3
+[profile.release.package.vello_cpu]
+opt-level = 3
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
 
 # Keep the matching GPUI Kit 0.10.0 / GPUI 0.3.12 stack; supply AccessKit's
 # AT-SPI disabled state (#788) and off-screen/modal/teardown fixes under
