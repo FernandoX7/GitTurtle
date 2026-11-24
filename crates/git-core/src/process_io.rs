@@ -7,6 +7,26 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(all(unix, not(target_os = "linux")))]
+static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Spawns a Git subprocess.
+///
+/// On Unix platforms without atomic `pipe2(..., O_CLOEXEC)` (notably macOS,
+/// rust-lang/rust#95584), `std::process::Command::spawn` creates stdio pipes
+/// with `pipe()` and applies `FD_CLOEXEC` non-atomically afterwards. When a
+/// long-lived subprocess (`git log` history stream or `git cat-file --batch-command`)
+/// spawns concurrently with another thread's `Command::spawn`, the long-lived
+/// child can inherit the write end of the sibling command's stdout/stderr pipe,
+/// blocking EOF until `GIT_TIMEOUT`. Serializing the spawn syscall itself (and
+/// `PipeControl`'s `UnixStream::pair`) closes that window without serializing
+/// child execution or pipe I/O.
+pub(super) fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    command.spawn()
+}
+
 #[derive(Clone)]
 pub(super) struct PipeControl(Arc<PipeState>);
 
@@ -21,7 +41,11 @@ struct PipeState {
 impl PipeControl {
     fn new() -> Result<Self> {
         #[cfg(unix)]
-        let (wake_reader, wake_writer) = std::os::unix::net::UnixStream::pair()?;
+        let (wake_reader, wake_writer) = {
+            #[cfg(not(target_os = "linux"))]
+            let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::os::unix::net::UnixStream::pair()?
+        };
         Ok(Self(Arc::new(PipeState {
             stopped: AtomicBool::new(false),
             #[cfg(unix)]
@@ -812,5 +836,33 @@ os._exit(0)
         assert!(stop_started.elapsed() < Duration::from_secs(1));
         let _ = running.kill();
         let _ = running.wait();
+    }
+
+    #[test]
+    fn concurrent_spawn_child_does_not_leak_pipes_to_long_lived_sibling() {
+        let long_lived = Arc::new(std::sync::Mutex::new(Vec::<Child>::new()));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let long_lived_thread = Arc::clone(&long_lived);
+        let barrier_thread = Arc::clone(&barrier);
+        let spawner = thread::spawn(move || {
+            barrier_thread.wait();
+            for _ in 0..8 {
+                let mut command = shell("sleep 10");
+                command.stdout(Stdio::piped()).stderr(Stdio::piped());
+                let child = spawn_child(&mut command).unwrap();
+                long_lived_thread.lock().unwrap().push(child);
+            }
+        });
+        barrier.wait();
+        for _ in 0..16 {
+            let output = bounded_output(shell("printf ok"), Duration::from_secs(2)).unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"ok");
+        }
+        spawner.join().unwrap();
+        for mut child in std::mem::take(&mut *long_lived.lock().unwrap()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }

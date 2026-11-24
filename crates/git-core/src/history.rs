@@ -1375,10 +1375,8 @@ impl HistoryStream {
         } else {
             Stdio::null()
         });
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = process_io::spawn_child(&mut command)
             .context("Unable to start Git history traversal")?;
         let pipes = ChildPipes::take(&mut child)?;
         let channel = StreamChannel::new(input.is_some());
@@ -1680,11 +1678,9 @@ pub(super) fn stream_history(
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Unable to start Git history read")?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child =
+        process_io::spawn_child(&mut command).context("Unable to start Git history read")?;
     let pipes = ChildPipes::take(&mut child)?;
     let channel = StreamChannel::new(input.is_some());
     let input_writer = input.map(|bytes| {

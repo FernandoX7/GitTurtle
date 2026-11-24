@@ -2580,10 +2580,8 @@ fn bounded_output_with(mut command: Command, timeout: Duration, seam: WaitSeam) 
     // no thread this wait owns reads one.
     let cancellation = work::inspection_cancellation();
     isolate_process_group(&mut command);
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = process_io::spawn_child(&mut command)
         .context("Unable to start Git; install Git and ensure it is on PATH")?;
     // Where this fails it has killed and reaped the child itself. From here to
     // the last join nothing returns early: every ending takes the one
@@ -2994,12 +2992,12 @@ impl BatchReader {
 
     fn spawn_command(mut command: Command, timeout: Duration) -> Result<Self> {
         isolate_process_group(&mut command);
-        let mut child = command
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("Unable to start Git object reader")?;
+            .stderr(Stdio::null());
+        let mut child =
+            process_io::spawn_child(&mut command).context("Unable to start Git object reader")?;
         let pipes = ChildPipes::take(&mut child)?;
         let input = pipes.input.expect("Requested Git object input pipe");
         let output = BufReader::new(pipes.output);
