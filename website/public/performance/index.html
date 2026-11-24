@@ -73,12 +73,30 @@
 <tr><th scope="row">Partial hunk staging</th><td>6.19</td><td>4.96</td><td>−19.9%</td></tr>
 </tbody></table></div>
 <p>Alongside those measured backend latencies, GitTurtle now separates fast metadata reads from heavy preview decoding across a bounded two-lane worker, collapses giant untracked trees under a fixed probe budget (reducing a 12,000-file untracked <code>node_modules/</code> scan from 12,003 rows to 4), degrades monorepo local watching to Git metadata directories cleanly, avoids duplicating RGBA pixel buffers during image decoding, defers split-diff and Settings UI construction until needed, and draws straight commit-graph lanes as snapped quads. These backend figures exclude live compositor presentation and are recorded in full under <code>docs/benchmarks/</code> in the repository.</p>
+<h2 id="pre10-refresh">Current-build release check (November 24, 2026)</h2>
+<p>After shrinking the release binary (<code>106.8 MiB</code> raw ELF / <code>32.4 MiB</code> packaged tarball on Linux ARM64, down 25.3% from <code>142.9 MiB</code> with all 28 Tree-sitter grammars and preview formats intact), adding Shift-click range compare and rebase drag-reorder, and hardening Linux IME and AT-SPI accessibility, clean release build <code>07a1492d</code> was measured on Apple M2 Pro P-cores (4–11) under a quiet host lock.</p>
+<div class="guide-table"><table><caption>Current-build release medians at <code>07a1492d</code> (M2 Pro P-cores, Linux ARM64), in milliseconds</caption><thead><tr><th scope="col">Operation</th><th scope="col">Median</th><th scope="col">95th percentile</th><th scope="col">Layer</th></tr></thead><tbody>
+<tr><th scope="row">Next 500 commits in a 120,000-commit history (<code>n = 597</code>)</th><td>0.535</td><td>0.606</td><td>Core Git</td></tr>
+<tr><th scope="row">Changed-file selection across a 120,000-commit history (<code>n = 40</code>)</th><td>0.796</td><td>1.321</td><td>Core Git</td></tr>
+<tr><th scope="row">History stream cancellation, including kill and reap (<code>n = 20</code>)</th><td>2.200</td><td>2.229</td><td>Core Git</td></tr>
+<tr><th scope="row">Passive working status / staged preview (demo repo, <code>n = 20</code>)</th><td>1.785 / 0.669</td><td>1.940 / 0.872</td><td>Core Git</td></tr>
+<tr><th scope="row">Worker open snapshot (200 commits / 20 files, <code>n = 60</code>)</th><td>4.869</td><td>5.386</td><td>Worker</td></tr>
+<tr><th scope="row">Working read / explicit file stage (300 files / 30 modified, <code>n = 60</code>)</th><td>6.543 / 2.575</td><td>7.870 / 3.341</td><td>Worker / Core Git</td></tr>
+<tr><th scope="row">Unified / split intraline diff prep (20,000 lines, <code>n = 40</code>)</th><td>1.496 / 2.421</td><td>1.517 / 2.564</td><td>App CPU</td></tr>
+<tr><th scope="row">Selective filter over 50,000 cached History / Working paths (<code>n = 40</code>)</th><td>0.728 / 0.585</td><td>0.746 / 0.642</td><td>App CPU</td></tr>
+<tr><th scope="row">Quiet refresh landing (5,000 commits / 3,001 branches, <code>n = 40</code>)</th><td>1.263</td><td>2.219</td><td>Headless GPUI (0 redraws)</td></tr>
+<tr><th scope="row">Unified / split diff scroll step (2,400 changed lines, 13 pt, <code>n = 60</code>)</th><td>0.799 / 1.531</td><td>0.827 / 1.574</td><td>Headless GPUI (layout + paint)</td></tr>
+<tr><th scope="row">PR review file selection (7.95 MiB / 16,001 rows, <code>n = 60</code>)</th><td>0.216</td><td>0.259</td><td>UI handler only</td></tr>
+</tbody></table></div>
+<p>With no screen reader active, accessible text-run hooks (without D-Bus or paint) measured a pooled median of <strong>0.083 µs</strong> across 6,600 samples spanning fixtures up to 5 MB / 100,000 lines (0.083–0.084 µs per-series median, 4.750 µs max); with a screen reader active, cached redraws took 0.71 µs for an input, 7.21 µs for a 2 KB text area and 1.252 ms for a 5 MB (100,000-line) editor. Headless GPUI rows run on GPUI’s test platform and exclude font shaping, GPU execution and compositor presentation; live compositor launch and scroll figures remain anchored to their dated records above.</p>
 <h2 id="records">Measurement records</h2>
-<p>Read the launch summary or download the samples for the original GUI and pagination measurements. Each CSV contains the recorded values in collection order.</p>
+<p>Read the summaries or download the raw samples for both the current-build refresh and the original GUI and pagination measurements. Each CSV contains the recorded values in collection order.</p>
 <ul>
+<li><a href="/performance/records/pre10-release-summary.txt">November 24 current-build release summary (text)</a> records the <code>07a1492d</code> binary footprint, core Git, worker, app CPU and headless GPUI timings on M2 Pro P-cores.</li>
+<li><a href="/performance/records/pre10-linear-history-pages.csv">November 24 500-commit page timings (CSV)</a> gives all 600 incremental page reads from the <code>07a1492d</code> 120,000-commit linear-history run.</li>
 <li><a href="/performance/records/warm-launch.txt">Warm-launch timing summary (text)</a> includes the base and candidate medians and ranges from the October 27 interface-font check.</li>
 <li><a href="/performance/records/history-and-diff.csv">Commit selection and text-diff timings (CSV)</a> pairs the two September 8 navigation sequences by selection number, with 20 elapsed times for each operation.</li>
-<li><a href="/performance/records/linear-history-pages.csv">500-commit page timings (CSV)</a> gives all 600 incremental page reads from the September 10 linear-history benchmark. Filter out offset zero to reproduce the subsequent-page result.</li>
+<li><a href="/performance/records/linear-history-pages.csv">September 10 500-commit page timings (CSV)</a> gives all 600 incremental page reads from the original M4 Max linear-history benchmark. Filter out offset zero to reproduce the subsequent-page result.</li>
 <li><a href="/performance/records/history-scroll.csv">UI-thread CPU time per wheel notch (CSV)</a> gives all 720 measured notches from the six wide-window launches of <code>0aca11e</code> in the October 27 quiet-host run.</li>
 </ul>
     </article>
