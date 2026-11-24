@@ -92,6 +92,7 @@ struct Retained {
     graph: Vec<graph::GraphRow>,
     graph_notice: Option<String>,
     selected_commit: Option<usize>,
+    history_range: Option<HistoryRange>,
     files: Vec<FileChange>,
     selected_file: Option<usize>,
     parent: usize,
@@ -257,6 +258,7 @@ impl GitTurtle {
                 graph: std::mem::take(&mut self.graph),
                 graph_notice: self.graph_notice.take(),
                 selected_commit: self.selected_commit.take(),
+                history_range: self.history_range.take(),
                 files: std::mem::take(&mut self.files),
                 selected_file: self.selected_file.take(),
                 parent: self.parent,
@@ -270,6 +272,7 @@ impl GitTurtle {
         self.graph.clear();
         self.graph_notice = None;
         self.selected_commit = None;
+        self.history_range = None;
         self.selected_file = None;
         self.files.clear();
         self.file_paths.reset();
@@ -322,6 +325,7 @@ impl GitTurtle {
         self.graph_notice = normal.graph_notice;
         self.graph_lanes = self.graph.iter().map(|row| row.width).max().unwrap_or(1);
         self.selected_commit = normal.selected_commit;
+        self.history_range = normal.history_range;
         self.files = normal.files;
         self.refresh_file_filter(window, cx);
         self.selected_file = normal.selected_file;
@@ -332,6 +336,10 @@ impl GitTurtle {
         self.clear_preview();
         self.error = None;
         if self.files.is_empty()
+            && let Some(range) = self.history_range.clone()
+        {
+            self.request_history_range_changes(&range, window, cx);
+        } else if self.files.is_empty()
             && let Some(index) = self.selected_commit
         {
             self.select_commit(index, window, cx);

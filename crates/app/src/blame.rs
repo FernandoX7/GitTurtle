@@ -307,14 +307,23 @@ impl GitTurtle {
             };
             target
         } else {
-            let (Some(file), Some(commit)) = (
-                self.files.get(index),
-                self.selected_commit.and_then(|i| self.commits.get(i)),
-            ) else {
+            let Some(file) = self.files.get(index) else {
                 return;
             };
+            let oid = if let Some(range) = &self.history_range {
+                if file.new_oid.is_some() {
+                    range.after_oid.clone()
+                } else {
+                    range.before_oid.clone()
+                }
+            } else {
+                let Some(commit) = self.selected_commit.and_then(|i| self.commits.get(i)) else {
+                    return;
+                };
+                commit.oid.clone()
+            };
             BlameTarget::Committed {
-                oid: commit.oid.clone(),
+                oid,
                 path: file.path().to_owned(),
             }
         };

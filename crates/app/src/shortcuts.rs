@@ -448,7 +448,7 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
     ),
     shortcut!(
         ExtendNext,
-        "Extend Working Selection Down",
+        "Extend Selection Down",
         "Lists and Selection",
         "shift-down",
         ExtendNextWorking,
@@ -456,7 +456,7 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
     ),
     shortcut!(
         ExtendPrevious,
-        "Extend Working Selection Up",
+        "Extend Selection Up",
         "Lists and Selection",
         "shift-up",
         ExtendPreviousWorking,

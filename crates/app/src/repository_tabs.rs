@@ -1339,10 +1339,11 @@ impl GitTurtle {
             bookmark.model = saved.model.clone();
             bookmark.markdown = saved.markdown;
         }
-        // Quick Open's source scope/inspection stack is retained only in warm
-        // tabs. Cold restoration can safely keep its underlying history
-        // selection, but must not label the source as that commit's file change.
-        if self.is_quick_source() {
+        // Quick Open's source scope and History commit-range comparisons are
+        // retained only in warm tabs. Cold restoration safely keeps the
+        // underlying history selection, and must not mislabel a range or
+        // tracked-source diff as a single commit's file change.
+        if self.is_quick_source() || self.history_range.is_some() {
             bookmark.retain_history_only();
         }
         bookmark
@@ -2867,6 +2868,7 @@ impl GitTurtle {
             self.files.clear();
             self.selected_commit = None;
             self.selected_compare_commit = None;
+            self.history_range = None;
             self.selected_file = None;
             self.tags.clear();
             self.tags_truncated = false;
@@ -3527,6 +3529,17 @@ impl GitTurtle {
     /// (`read_selected_preview`). The tab came back in Compare with its file
     /// selected, no content and nothing reading it.
     fn resume_tab_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == WorkspaceMode::History
+            && self.files.is_empty()
+            && self.loading.is_none()
+            && self.error.is_none()
+            && !self.revision_inspection.is_active()
+            && !self.file_history.is_active()
+            && let Some(range) = self.history_range.clone()
+        {
+            self.request_history_range_changes(&range, window, cx);
+            return;
+        }
         if self.mode != WorkspaceMode::Compare
             || self.content.is_some()
             || self.loading.is_some()

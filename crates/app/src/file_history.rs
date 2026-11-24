@@ -1718,14 +1718,24 @@ impl GitTurtle {
             }
             return;
         }
-        let (Some(commit), Some(file)) = (
-            self.selected_commit
-                .and_then(|index| self.commits.get(index)),
-            self.files.get(index),
-        ) else {
+        let Some(file) = self.files.get(index) else {
             return;
         };
-        let anchor = commit.oid.clone();
+        let anchor = if let Some(range) = &self.history_range {
+            if file.new_oid.is_some() {
+                range.after_oid.clone()
+            } else {
+                range.before_oid.clone()
+            }
+        } else {
+            let Some(commit) = self
+                .selected_commit
+                .and_then(|index| self.commits.get(index))
+            else {
+                return;
+            };
+            commit.oid.clone()
+        };
         let path = file.path().to_owned();
         self.open_file_history_at(anchor, path, window, cx);
     }

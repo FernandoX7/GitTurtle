@@ -3,14 +3,14 @@
 > Strictly `<= 60` lines (enforced by `scripts/check-agent-guidance.py`). Overwrite on task close; never append session logs here. Graduate durable lessons into `.agents/skills/` or `docs/decisions/`.
 
 - **Updated:** 2026-11-23
-- **Latest `main`:** `31d31af2` (PRs `#241`–`#253` merged; Quality green).
-- **Active branch / PR:** `wt/binary-size-diet` (Pre-1.0 Polish Wave PR 1 of 4) — Release binary size diet & cold-start lean-out:
-  - Tuned `[profile.release]` (`opt-level = "s"`, `lto = "thin"`, `codegen-units = 1`, `strip = "debuginfo"`) with `opt-level = 3` retained for UI framework, app, macOS Metal/CoreText, Linux wgpu/text-shaping, core, diff-model, preview, syntax runtime, and raster/image hot crates.
-  - Added `-Wl,-x` for release `gitturtle` binaries in `crates/app/build.rs` to strip input local (`STB_LOCAL`) / non-global symbols while keeping `.symtab` and all global/weak symbols intact for `scripts/package-linux.sh` and crash backtraces.
-  - Reduced Linux AArch64 release binary from `142.94 MiB` to `106.77 MiB` (`-25.3%`; `.tar.gz` `41.66 MiB` → `32.37 MiB`, `-22.3%`) with zero hot-path regressions verified on M2 Pro P-cores (`docs/benchmarks/2026-11-23-release-binary-size-diet.md`).
-- **Not exercised locally:** Linux x86-64 (`ubuntu-24.04` `rust-lld` release link/packaging) and macOS ARM64 (`crates/app`/`crates/preview` compilation/packaging) are pending hosted `ubuntu-24.04` and `macos-15`/`macos-26` CI; live physical-desktop sessions (multi-monitor Wayland/Hyprland, X11, KDE, GNOME, macOS) and live Cloudflare Pages deployment (`wrangler` deploy) are held for owner.
+- **Latest `main`:** `f74ca679` (PR `#254` binary size diet merged; Linux AArch64 release `142.94 MiB` → `106.77 MiB`, `-25.3%`; Quality green).
+- **Active branch / PR:** `wt/ergonomics-range-rebase` (Pre-1.0 Polish Wave PR 2 of 4) — Everyday ergonomics:
+  - Added Shift-click and `Shift+Up`/`Shift+Down` History commit range compare (`HistoryRange` on `RepositoryWorkspace`), wired passively through `Job::CompareRevisions` (`ComparisonMode::Endpoints`) with generation/OID validation, calm inspector header (`Comparing <old>..<new>`, commit count, `Swap`, `Clear`/`Esc`), Compare + Back range retention, search retention, and AccessKit row/header labels.
+  - Added native GPUI drag-to-reorder in Interactive Rebase (`RebaseForm`) with 2 px accented drop indicator, drag preview respecting reduced motion, live edge auto-scroll, Escape-to-cancel mid-drag without closing or mutating, and live `validate_steps` enforcement rejecting leading `Squash`/`Fixup` drops with an accessible inline notice.
+  - Added deterministic unit + `#[gpui::test]` suites (`history_range_tests.rs`, `interactive_rebase_drag_tests.rs`) and synced `docs/user-guide.md` and `docs/interactive-rebase.md`.
+- **Not exercised locally:** macOS ARM64 (`crates/app` compilation/UI) and Linux x86-64 are pending hosted `macos-15`/`macos-26` and `ubuntu-24.04` CI (locally verified on Linux AArch64 headless `#[gpui::test]`; physical Wayland/X11, macOS, VoiceOver, and Orca sessions remain owner-driven).
 - **Next concrete steps:**
-  1. Merge PR 1 (`wt/binary-size-diet`) after 100% green hosted Quality CI, then proceed to PR 2 (Shift-click History range compare & Interactive Rebase drag-reorder).
+  1. Finish PR 2 gates/reviews/hosted CI and squash-merge to `main`.
   2. PR 3: Linux IME & Orca/AT-SPI accessibility parity hardening.
   3. PR 4: Current-build end-to-end GUI benchmark refresh, docs/website sync, and local release install.
 

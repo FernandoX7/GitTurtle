@@ -2667,6 +2667,25 @@ impl GitTurtle {
             self.automatic.retained_commit,
             self.history_search_active(),
         ) || self.graph_notice.is_some();
+        let range_span = self.history_range.as_ref().and_then(|range| {
+            let mut anchor_pos = None;
+            let mut target_pos = None;
+            for (pos, &index) in self.visible.iter().enumerate() {
+                if let Some(commit) = self.commits.get(index) {
+                    if commit.oid == range.anchor_oid {
+                        anchor_pos = Some(pos);
+                    }
+                    if commit.oid == range.target_oid {
+                        target_pos = Some(pos);
+                    }
+                    if anchor_pos.is_some() && target_pos.is_some() {
+                        break;
+                    }
+                }
+            }
+            let (a, t) = (anchor_pos?, target_pos?);
+            Some((a.min(t), a.max(t)))
+        });
         HistoryRows {
             spacing: self.layout_lane_spacing(&columns),
             lane_offset: if filtered {
@@ -2687,6 +2706,7 @@ impl GitTurtle {
                     .find(|column| column.id == ColumnId::Subject)
                     .map_or(0., |column| column.width),
             ),
+            range_span,
             columns,
         }
     }
@@ -2880,6 +2900,22 @@ impl GitTurtle {
             }
         );
         let compare_marked = self.selected_compare_commit.as_deref() == Some(commit.oid.as_str());
+        let range_role = match self.history_range.as_ref() {
+            Some(range) if range.before_oid == commit.oid => HistoryRangeRole::Before,
+            Some(range) if range.after_oid == commit.oid => HistoryRangeRole::After,
+            Some(_)
+                if rows
+                    .range_span
+                    .is_some_and(|(lo, hi)| position > lo && position < hi) =>
+            {
+                HistoryRangeRole::Middle
+            }
+            _ => HistoryRangeRole::None,
+        };
+        let range_endpoint = matches!(
+            range_role,
+            HistoryRangeRole::Before | HistoryRangeRole::After
+        );
         #[cfg(test)]
         HISTORY_ROW_NAMES.with(|names| {
             names
@@ -2889,14 +2925,19 @@ impl GitTurtle {
         let row_label: SharedString = if compare_marked {
             format!("{name} · marked for comparison").into()
         } else {
-            name.into()
+            match range_role {
+                HistoryRangeRole::Before => format!("{name} · range start").into(),
+                HistoryRangeRole::After => format!("{name} · range end").into(),
+                HistoryRangeRole::Middle => format!("{name} · in comparison range").into(),
+                HistoryRangeRole::None => name.into(),
+            }
         };
         let row = div()
             .id(commit_row_id(&commit.oid))
             .debug_selector(move || format!("history-row-{index}"))
             .role(Role::ListBoxOption)
             .aria_label(row_label)
-            .aria_selected(active || compare_marked)
+            .aria_selected(active || compare_marked || range_role != HistoryRangeRole::None)
             .when(active, |row| row.aria_active_descendant())
             .aria_position_in_set(position + 1)
             .aria_size_of_set(self.visible.len())
@@ -2906,20 +2947,22 @@ impl GitTurtle {
             .items_center()
             .px_3()
             .gap_0()
-            .bg(rgb(if active {
+            .bg(rgb(if active || range_endpoint {
                 colors.selected
-            } else if compare_marked {
+            } else if compare_marked || range_role == HistoryRangeRole::Middle {
                 colors.subtle
             } else {
                 colors.canvas
             }))
             .border_l_2()
-            .border_color(rgb(if active || compare_marked {
+            .border_color(rgb(if active || compare_marked || range_endpoint {
                 colors.accent
+            } else if range_role == HistoryRangeRole::Middle {
+                colors.border
             } else {
                 colors.canvas
             }))
-            .hover(|s| s.bg(rgb(colors.row_hover(active))))
+            .hover(|s| s.bg(rgb(colors.row_hover(active || range_endpoint))))
             .active(|s| s.bg(rgb(colors.selected)))
             .cursor_pointer()
             .children(columns.columns.iter().map(|column| {
@@ -2940,7 +2983,7 @@ impl GitTurtle {
                             rows.spacing,
                             self.settings.density.history_row_height(),
                             graph::RowStyle {
-                                active,
+                                active: active || range_endpoint,
                                 merge: commit.parents.len() > 1,
                                 filtered: rows.filtered,
                             },
@@ -3008,12 +3051,17 @@ impl GitTurtle {
         native_accessibility::clips_children(row.on_click(cx.listener(
             move |this, event: &ClickEvent, window, cx| {
                 if event.modifiers().secondary(cx) {
+                    if this.history_range.is_some() {
+                        this.clear_history_range(window, cx);
+                    }
                     if this.selected_compare_commit.as_deref() == Some(click_oid.as_str()) {
                         this.selected_compare_commit = None;
                     } else {
                         this.selected_compare_commit = Some(click_oid.clone());
                     }
                     cx.notify();
+                } else if event.modifiers().shift {
+                    this.select_history_range(index, window, cx);
                 } else {
                     this.selected_compare_commit = None;
                     this.select_commit(index, window, cx);
@@ -3051,6 +3099,9 @@ impl GitTurtle {
         if self.revision_inspection.is_active() {
             return self.render_revision_inspector(cx);
         }
+        if let Some(range) = self.history_range.as_ref() {
+            return self.render_history_range_inspector(range, files_header, cx);
+        }
         let colors = palette(cx);
         let Some(commit) = self
             .selected_commit
@@ -3078,6 +3129,167 @@ impl GitTurtle {
             .border_l_1()
             .border_color(rgb(colors.border))
             .child(self.render_commit_message(commit, false, extent, window, cx))
+            .child(
+                div()
+                    .id("commit-inspector-files")
+                    .debug_selector(|| "commit-inspector-files".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_files_with(files_header, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_history_range_inspector(
+        &self,
+        range: &HistoryRange,
+        files_header: FilesHeader,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = palette(cx);
+        let before_short = short_oid(&range.before_oid);
+        let after_short = short_oid(&range.after_oid);
+        let heading = format!("Comparing {before_short}..{after_short}");
+        let heading_tip = format!("Comparing {}..{}", range.before_oid, range.after_oid);
+        let subtitle = if range.swapped {
+            format!(
+                "{} · reversed",
+                counted(range.commit_count, "commit", "commits")
+            )
+        } else {
+            counted(range.commit_count, "commit", "commits")
+        };
+        let from_line = format!("From {before_short} · {}", range.before_subject);
+        let to_line = format!("To {after_short} · {}", range.after_subject);
+        let from_tip = format!("Before: {} — {}", range.before_oid, range.before_subject);
+        let to_tip = format!("After: {} — {}", range.after_oid, range.after_subject);
+        let spoken_summary = format!("{heading}. {subtitle}. {from_tip}. {to_tip}");
+        let clear_tip = if self.mode == WorkspaceMode::History {
+            format!("Clear commit range ({})", shortcuts::ESCAPE)
+        } else {
+            "Clear commit range".to_owned()
+        };
+        let header = native_accessibility::clips_children(
+            div()
+                .id("history-range-header")
+                .debug_selector(|| "history-range-header".into())
+                .role(Role::Group)
+                .aria_label(spoken_summary)
+                .flex_shrink_0()
+                .min_w_0()
+                .px_3()
+                .py_2p5()
+                .border_b_1()
+                .border_color(rgb(colors.border))
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .child(
+                            native_accessibility::static_text(
+                                div()
+                                    .id("history-range-title")
+                                    .debug_selector(|| "history-range-title".into()),
+                                heading.clone(),
+                            )
+                            .min_w_0()
+                            .truncate()
+                            .text_size(appearance::ui_text(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(colors.text))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(heading_tip.clone()).build(window, cx)
+                            })
+                            .child(heading),
+                        )
+                        .child(
+                            native_accessibility::static_text(
+                                div()
+                                    .id("history-range-count")
+                                    .debug_selector(|| "history-range-count".into()),
+                                subtitle.clone(),
+                            )
+                            .min_w_0()
+                            .truncate()
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(subtitle),
+                        ),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .text_size(appearance::ui_text(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(
+                            native_accessibility::static_text(
+                                div().id("history-range-from"),
+                                from_tip.clone(),
+                            )
+                            .min_w_0()
+                            .truncate()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(from_tip.clone()).build(window, cx)
+                            })
+                            .child(from_line),
+                        )
+                        .child(
+                            native_accessibility::static_text(
+                                div().id("history-range-to"),
+                                to_tip.clone(),
+                            )
+                            .min_w_0()
+                            .truncate()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(to_tip.clone()).build(window, cx)
+                            })
+                            .child(to_line),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_1p5()
+                        .pt_0p5()
+                        .child(
+                            button("history-range-swap", "Swap", "", false)
+                                .debug_selector(|| "history-range-swap".into())
+                                .accessibility_label("Swap comparison direction")
+                                .tooltip("Swap before and after revisions")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.swap_history_range(window, cx);
+                                })),
+                        )
+                        .child(
+                            button("history-range-clear", "Clear", "", false)
+                                .debug_selector(|| "history-range-clear".into())
+                                .accessibility_label("Clear commit range")
+                                .tooltip(clear_tip)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.clear_history_range(window, cx);
+                                })),
+                        ),
+                ),
+        );
+        div()
+            .debug_selector(|| "history-range-inspector".into())
+            .size_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .bg(rgb(colors.panel))
+            .border_l_1()
+            .border_color(rgb(colors.border))
+            .child(header)
             .child(
                 div()
                     .id("commit-inspector-files")
@@ -3442,9 +3654,21 @@ impl GitTurtle {
                         && let Some(loading) = self.loading
                     {
                         empty(loading, "")
+                    } else if visible.is_empty()
+                        && let Some(error) = &self.error
+                        && self.history_range.is_some()
+                    {
+                        empty("Could not compare commits", error)
                     } else if visible.is_empty() && self.file_filter.read(cx).value().is_empty() {
-                        EmptyState::new("files-empty", "No file changes against this parent")
-                            .pane(cx)
+                        EmptyState::new(
+                            "files-empty",
+                            if self.history_range.is_some() {
+                                "No file changes in this commit range"
+                            } else {
+                                "No file changes against this parent"
+                            },
+                        )
+                        .pane(cx)
                     } else if visible.is_empty() {
                         // Clear sits beside the filter, above.
                         EmptyState::new("files-no-match", "No matches").pane(cx)
@@ -3595,10 +3819,11 @@ impl GitTurtle {
         let Some(file) = self.files.get(index).cloned() else {
             return;
         };
-        let commit = self
-            .selected_commit
-            .and_then(|index| self.commits.get(index))
-            .map(|commit| commit.oid.clone());
+        let commit = self.changed_file_revision(&file);
+        let range_pair = self
+            .history_range
+            .as_ref()
+            .map(|range| (range.before_oid.clone(), range.after_oid.clone()));
         let anchor = native_accessibility::ListRow::new(
             &self.file_scroll,
             row,
@@ -3613,16 +3838,23 @@ impl GitTurtle {
         // The entry by both its paths, so two entries sharing one path, as a
         // rename's source and a file added in its place, stay apart.
         let entry = (file.old_path.clone(), file.new_path.clone());
+        let menu_file = file.clone();
         // A row still holds the file, and the menu is drawn beside it. The
         // row it was last beside is asked first, so a check while nothing
         // moved reads one row; the rows are the list's own, read again only
         // where they changed.
         let holds = move |app: &GitTurtle| {
-            let selected = app
-                .selected_commit
-                .and_then(|index| app.commits.get(index))
-                .map(|commit| &commit.oid);
-            if app.path != shown || selected != of.as_ref() {
+            let current_range = app
+                .history_range
+                .as_ref()
+                .map(|range| (range.before_oid.as_str(), range.after_oid.as_str()));
+            let expected_range = range_pair
+                .as_ref()
+                .map(|(before, after)| (before.as_str(), after.as_str()));
+            if app.path != shown
+                || app.changed_file_revision(&menu_file) != of
+                || current_range != expected_range
+            {
                 return false;
             }
             let is_entry = |file: &FileChange| file.old_path == entry.0 && file.new_path == entry.1;
@@ -3763,10 +3995,7 @@ impl GitTurtle {
         let history_owner = cx.entity().downgrade();
         let history_repository = self.path.clone();
         let history_file = file.clone();
-        let history_commit = self
-            .selected_commit
-            .and_then(|index| self.commits.get(index))
-            .map(|commit| commit.oid.clone());
+        let history_commit = self.changed_file_revision(file);
         let (symbol, color, label) = match file.status.letter() {
             "A" => ("file-added", colors.added, "New"),
             "D" => ("file-deleted", colors.removed, "Deleted"),
@@ -5902,11 +6131,7 @@ fn changed_file_menu(
         move |_, window, cx| {
             let _ = owner.update(cx, |this, cx| {
                 if this.path == repository
-                    && this
-                        .selected_commit
-                        .and_then(|i| this.commits.get(i))
-                        .map(|c| &c.oid)
-                        == commit.as_ref()
+                    && this.changed_file_revision(&file) == commit
                     && let Some(index) = this.files.iter().position(|candidate| candidate == &file)
                 {
                     this.open_file_history(index, window, cx);
@@ -5923,11 +6148,7 @@ fn changed_file_menu(
             move |_, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     if this.path == repository
-                        && this
-                            .selected_commit
-                            .and_then(|i| this.commits.get(i))
-                            .map(|c| &c.oid)
-                            == commit.as_ref()
+                        && this.changed_file_revision(&file) == commit
                         && let Some(index) =
                             this.files.iter().position(|candidate| candidate == &file)
                     {
@@ -8776,6 +8997,16 @@ fn reference_count(references: usize) -> SharedString {
     )
 }
 
+/// Role of a visible History commit row within an active Shift-click/keyboard
+/// commit comparison range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryRangeRole {
+    None,
+    Before,
+    After,
+    Middle,
+}
+
 /// What every History row of a frame shares (`GitTurtle::history_rows`).
 pub(super) struct HistoryRows {
     columns: columns::ColumnLayout,
@@ -8787,6 +9018,9 @@ pub(super) struct HistoryRows {
     labels: appearance::Labels,
     /// Narrow History's reference pill for this frame's subject width.
     pill: Pill,
+    /// Inclusive visible-row span `(lo, hi)` of the active `history_range`, if
+    /// both endpoints are currently visible.
+    range_span: Option<(usize, usize)>,
 }
 
 /// What a History column header cell needs for its whole `title` at the
@@ -9697,7 +9931,7 @@ pub(crate) fn note_compact_label(selector: &'static str, name: &SharedString) {
 /// the list. Keyed by the commit's index, a menu open on a commit passed to
 /// whichever commit took that index, and acted on it. An ID that is not
 /// hexadecimal keeps its text.
-fn commit_row_id(oid: &str) -> ElementId {
+pub(crate) fn commit_row_id(oid: &str) -> ElementId {
     fn nibble(digit: u8) -> u8 {
         match digit {
             b'0'..=b'9' => digit - b'0',
@@ -12220,11 +12454,15 @@ impl Render for GitTurtle {
             .on_action(cx.listener(|this, _: &ExtendNextWorking, window, cx| {
                 if this.mode == WorkspaceMode::Working {
                     this.extend_working_selection(true, window, cx);
+                } else if this.can_extend_history_range(window, cx) {
+                    this.extend_history_range(true, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ExtendPreviousWorking, window, cx| {
                 if this.mode == WorkspaceMode::Working {
                     this.extend_working_selection(false, window, cx);
+                } else if this.can_extend_history_range(window, cx) {
+                    this.extend_history_range(false, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))

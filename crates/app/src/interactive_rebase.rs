@@ -380,7 +380,7 @@ use crate::native_accessibility::text as label;
 /// What the sequence's keys do, in the " · "-separated phrases [`keyboard_help`] draws.
 fn keyboard_help_text() -> String {
     format!(
-        "↑/↓ select · {} / {} reorder · P/R/E/S/F/D choose an action. Edit pauses to amend or \
+        "↑/↓ select · Drag or {} / {} reorder · P/R/E/S/F/D choose an action. Edit pauses to amend or \
          split; Squash combines messages; Fixup keeps the preceding message. Drop removes the \
          commit's changes.",
         shortcuts::key_label("alt-up"),
@@ -598,7 +598,7 @@ impl GitTurtle {
                     false
                 })
                 .on_cancel(move |_, window, cx| {
-                    cancel.update(cx, |form, cx| form.close(window, cx));
+                    cancel.update(cx, |form, cx| form.cancel_or_close(window, cx));
                     false
                 })
         });
@@ -738,6 +738,74 @@ impl GitTurtle {
     }
 }
 
+#[derive(Clone, Debug)]
+struct DraggedRebaseStep {
+    form: EntityId,
+    index: usize,
+    oid: String,
+    label: SharedString,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RebaseDropTarget {
+    source: usize,
+    slot: usize,
+}
+
+impl RebaseDropTarget {
+    fn is_noop(self) -> bool {
+        self.slot == self.source || self.slot == self.source + 1
+    }
+}
+
+struct DragRebaseStepPreview {
+    label: SharedString,
+    reduced_motion: bool,
+}
+
+impl Render for DragRebaseStepPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        div()
+            .debug_selector(|| "rebase-drag-preview".into())
+            .max_w(crate::appearance::ui_size(360.))
+            .px_2p5()
+            .py_1()
+            .rounded(px(7.))
+            .bg(rgb(p.raised()))
+            .border_1()
+            .border_color(rgb(p.accent))
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(p.text))
+            .overflow_hidden()
+            .truncate()
+            .when(!self.reduced_motion, |el| el.opacity(0.92))
+            .child(self.label.clone())
+    }
+}
+
+fn short_rebase_oid(oid: &str) -> String {
+    oid.chars().take(10).collect()
+}
+
+/// Computes the candidate sequence and destination index for moving `from` to
+/// insertion `slot` (`0..=steps.len()`), or `None` when the move is a no-op or
+/// out of range.
+fn reordered_steps(
+    steps: &[RebaseStep],
+    from: usize,
+    slot: usize,
+) -> Option<(Vec<RebaseStep>, usize)> {
+    if from >= steps.len() || slot > steps.len() || slot == from || slot == from + 1 {
+        return None;
+    }
+    let mut next = steps.to_vec();
+    let moved = next.remove(from);
+    let dest = if slot > from { slot - 1 } else { slot };
+    next.insert(dest, moved);
+    Some((next, dest))
+}
+
 struct RebaseForm {
     owner: WeakEntity<GitTurtle>,
     path: Option<PathBuf>,
@@ -745,6 +813,8 @@ struct RebaseForm {
     plan: Option<InteractiveRebasePlan>,
     steps: Vec<RebaseStep>,
     selected: usize,
+    /// Active drag-and-drop insertion indicator while dragging a commit row.
+    drag_target: Option<RebaseDropTarget>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     /// Where the sequence's list rests: its offset as it was last
@@ -790,6 +860,7 @@ impl RebaseForm {
             plan: None,
             steps: Vec::new(),
             selected: 0,
+            drag_target: None,
             // A Tab stop of its own: the element's `tab_stop` applies only to
             // a handle the element makes itself, so the sequence, given this
             // one, was passed over by Tab and Shift+Tab.
@@ -814,9 +885,25 @@ impl RebaseForm {
         if self.closed {
             return;
         }
+        self.drag_target = None;
+        if cx.has_active_drag() {
+            cx.stop_active_drag(window);
+        }
         self.closed = true;
         self.pending = false;
         close_rebase_dialog(&self.owner, self.path.as_deref(), window, cx);
+    }
+
+    /// Cancels an active row drag without closing the dialog or mutating the
+    /// planned sequence; otherwise closes the dialog as usual.
+    fn cancel_or_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.has_active_drag() {
+            cx.stop_active_drag(window);
+            self.drag_target = None;
+            cx.notify();
+            return;
+        }
+        self.close(window, cx);
     }
 
     /// Where focus starts as the form opens: the sequence this form already
@@ -881,6 +968,7 @@ impl RebaseForm {
                                     form.steps = plan.steps();
                                     form.plan = Some(plan);
                                     form.selected = 0;
+                                    form.drag_target = None;
                                     form.acknowledged = false;
                                     // Focus lands on the sequence, on its
                                     // first commit, which the body shows
@@ -924,6 +1012,7 @@ impl RebaseForm {
             && let Some(step) = self.steps.get_mut(self.selected)
         {
             step.action = action;
+            self.drag_target = None;
             self.error = None;
             cx.notify();
         }
@@ -940,8 +1029,193 @@ impl RebaseForm {
         };
         self.steps.swap(self.selected, next);
         self.selected = next;
+        self.drag_target = None;
         self.scroll.scroll_to_item(next, ScrollStrategy::Center);
         self.error = None;
+        cx.notify();
+    }
+
+    fn drop_slot_for_y(
+        &self,
+        pointer_y: Pixels,
+        list_bounds: Bounds<Pixels>,
+        offset_y: Pixels,
+        row_height: f32,
+    ) -> usize {
+        let content_y = f32::from(pointer_y - list_bounds.origin.y - offset_y);
+        ((content_y / row_height) + 0.5)
+            .floor()
+            .clamp(0.0, self.steps.len() as f32) as usize
+    }
+
+    fn measured_row_height(&self, window: &Window) -> f32 {
+        let fallback = f32::from(window.pixel_snap(crate::appearance::ui_size(ROW_HEIGHT)));
+        let count = self.steps.len();
+        let measured = if count > 0 {
+            self.scroll
+                .0
+                .borrow()
+                .last_item_size
+                .map(|size| f32::from(size.contents.height) / count as f32)
+                .filter(|height| *height >= 1.0)
+        } else {
+            None
+        };
+        measured.unwrap_or(fallback).max(1.0)
+    }
+
+    fn update_drag_move(
+        &mut self,
+        event: &DragMoveEvent<DraggedRebaseStep>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let drag = event.drag(cx);
+        let drag_index = drag.index;
+        if drag.form != cx.entity_id()
+            || self.pending
+            || self.closed
+            || self.steps.len() < 2
+            || self
+                .steps
+                .get(drag_index)
+                .is_none_or(|step| step.oid != drag.oid)
+        {
+            return;
+        }
+        let pointer = event.event.position;
+        if !event.bounds.contains(&pointer) {
+            if self.drag_target.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        cx.set_active_drag_cursor_style(CursorStyle::ClosedHand, window);
+        let row_height = self.measured_row_height(window);
+        let (list_bounds, offset_y, scrolled) = {
+            let state = self.scroll.0.borrow();
+            let list_bounds = if state.base_handle.bounds().size.height > px(0.) {
+                state.base_handle.bounds()
+            } else {
+                event.bounds
+            };
+            let reach = state
+                .last_item_size
+                .map(|size| (size.contents.height - size.item.height).max(Pixels::ZERO))
+                .unwrap_or_else(|| state.base_handle.max_offset().y.max(Pixels::ZERO));
+            let mut offset = state.base_handle.offset();
+            let mut scrolled = false;
+            if reach > Pixels::ZERO {
+                let edge = px(row_height).min(list_bounds.size.height * 0.25);
+                let step = if cx.reduce_motion() {
+                    px(row_height * 0.5)
+                } else {
+                    px(row_height * 0.35)
+                };
+                let top_dist = pointer.y - list_bounds.origin.y;
+                let bottom_dist = list_bounds.bottom() - pointer.y;
+                let next_y = if top_dist < edge && offset.y < Pixels::ZERO {
+                    (offset.y + step).min(Pixels::ZERO)
+                } else if bottom_dist < edge && offset.y > -reach {
+                    (offset.y - step).max(-reach)
+                } else {
+                    offset.y
+                };
+                if next_y != offset.y {
+                    offset.y = next_y;
+                    state.base_handle.set_offset(offset);
+                    self.rest.set(next_y);
+                    scrolled = true;
+                }
+            }
+            (list_bounds, offset.y, scrolled)
+        };
+        let slot = self.drop_slot_for_y(pointer.y, list_bounds, offset_y, row_height);
+        let next = RebaseDropTarget {
+            source: drag_index,
+            slot,
+        };
+        if self.drag_target != Some(next) || scrolled {
+            self.drag_target = Some(next);
+            cx.notify();
+        }
+    }
+
+    fn finish_drag_drop(
+        &mut self,
+        drag: &DraggedRebaseStep,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.drag_target.take();
+        if drag.form != cx.entity_id()
+            || self.pending
+            || self.closed
+            || self
+                .steps
+                .get(drag.index)
+                .is_none_or(|step| step.oid != drag.oid)
+        {
+            cx.notify();
+            return;
+        }
+        // A fast single coalesced mouse move can activate `on_drag` in Bubble
+        // phase after Capture-phase `on_drag_move` was skipped; fall back to
+        // resolving the drop slot directly from the release position.
+        let slot = target
+            .filter(|target| target.source == drag.index)
+            .map(|target| target.slot)
+            .or_else(|| {
+                let pointer = window.mouse_position();
+                let (list_bounds, offset_y) = {
+                    let state = self.scroll.0.borrow();
+                    (state.base_handle.bounds(), state.base_handle.offset().y)
+                };
+                if list_bounds.size.height > px(0.) && list_bounds.contains(&pointer) {
+                    let row_height = self.measured_row_height(window);
+                    Some(self.drop_slot_for_y(pointer.y, list_bounds, offset_y, row_height))
+                } else {
+                    None
+                }
+            });
+        let Some(slot) = slot else {
+            cx.notify();
+            return;
+        };
+        self.reorder_step(drag.index, slot, window, cx);
+    }
+
+    /// Reorders the step at `from` to insertion `slot`, enforcing the loaded
+    /// plan's invariants live so an invalid plan (such as a leading Squash or
+    /// Fixup) is rejected cleanly with an accessible inline notice.
+    fn reorder_step(
+        &mut self,
+        from: usize,
+        slot: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drag_target = None;
+        if self.pending || self.closed {
+            cx.notify();
+            return;
+        }
+        let Some((candidate, dest)) = reordered_steps(&self.steps, from, slot) else {
+            cx.notify();
+            return;
+        };
+        if let Some(plan) = &self.plan
+            && let Err(error) = plan.validate_steps(&candidate)
+        {
+            crate::tags::set_error_line(&mut self.error, error.to_string(), window, cx);
+            cx.notify();
+            return;
+        }
+        self.steps = candidate;
+        self.selected = dest;
+        self.error = None;
+        self.scroll.scroll_to_item(dest, ScrollStrategy::Center);
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1041,27 +1315,42 @@ impl RebaseForm {
         });
     }
 
-    fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&self, index: usize, visible_end: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let step = &self.steps[index];
-        let subject = self
+        let raw_subject = self
             .plan
             .as_ref()
             .and_then(|plan| plan.commits.iter().find(|commit| commit.oid == step.oid))
             .map_or("", |commit| commit.subject.as_str());
+        let subject =
+            crate::commit_message::summary(&gitturtle_core::strip_bidi_controls(raw_subject));
         let text = format!(
             "{} · {} · {} · {}",
             index + 1,
             step.action.label(),
-            &step.oid[..10],
+            short_rebase_oid(&step.oid),
             subject
         );
+        let drag_label: SharedString = format!("{} · {}", step.action.label(), subject).into();
+        let drag_target = self.drag_target.filter(|_| cx.has_active_drag());
+        let is_dragged = drag_target.is_some_and(|target| target.source == index);
+        let indicator_top =
+            drag_target.is_some_and(|target| !target.is_noop() && target.slot == index);
+        let indicator_bottom = drag_target.is_some_and(|target| {
+            !target.is_noop() && target.slot == index + 1 && index + 1 == visible_end
+        });
+        let can_drag = !self.pending && self.steps.len() >= 2;
+        let form_id = cx.entity_id();
+        let drag_oid = step.oid.clone();
         let row = div()
             .id(("rebase-commit", index))
             .debug_selector(move || format!("rebase-commit-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(self.selected == index)
+            .when(self.selected == index, |row| row.aria_active_descendant())
             .aria_label(text.clone())
+            .relative()
             .w_full()
             .min_w_0()
             .h(crate::appearance::ui_size(ROW_HEIGHT))
@@ -1079,6 +1368,53 @@ impl RebaseForm {
             } else {
                 p.text
             }))
+            .when(is_dragged, |row| row.opacity(0.45))
+            .when(can_drag, |row| {
+                let row = if drag_target.is_some() {
+                    row.cursor_grabbing()
+                } else {
+                    row.cursor_grab()
+                };
+                row.on_drag(
+                    DraggedRebaseStep {
+                        form: form_id,
+                        index,
+                        oid: drag_oid,
+                        label: drag_label,
+                    },
+                    |drag, _, _, cx| {
+                        let reduced_motion = cx.reduce_motion();
+                        cx.new(|_| DragRebaseStepPreview {
+                            label: drag.label.clone(),
+                            reduced_motion,
+                        })
+                    },
+                )
+            })
+            .when(indicator_top, |row| {
+                row.child(
+                    div()
+                        .debug_selector(|| "rebase-drop-indicator".into())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(rgb(p.accent)),
+                )
+            })
+            .when(indicator_bottom, |row| {
+                row.child(
+                    div()
+                        .debug_selector(|| "rebase-drop-indicator".into())
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(rgb(p.accent)),
+                )
+            })
             .child(div().flex_1().min_w_0().truncate().child(text))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.selected = index;
@@ -1100,6 +1436,9 @@ impl RebaseForm {
 
 impl Render for RebaseForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.drag_target = None;
+        }
         // Each control Tab moves onto scrolls into the body's view whole with
         // its ring's room, and so does the sequence Load commits and the
         // form's opening focus (`focus_reveal`). In a 461 × 490 window at
@@ -1170,7 +1509,10 @@ impl RebaseForm {
             "rebase-sequence",
             self.steps.len(),
             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                range.map(|index| this.row(index, cx)).collect::<Vec<_>>()
+                let visible_end = range.end;
+                range
+                    .map(|index| this.row(index, visible_end, cx))
+                    .collect::<Vec<_>>()
             }),
         )
         .size_full()
@@ -1275,9 +1617,9 @@ impl RebaseForm {
                 cx.propagate();
             }))
             .on_action(cx.listener(Self::confirm_in_field))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
-            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
-            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel_or_close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel_or_close(window, cx); cx.stop_propagation(); }))
+            .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel_or_close(window, cx); cx.stop_propagation(); }))
             .child(marked(&self.fit.content, div().flex().flex_col().gap_3()
             .child(label("rebase-base-explanation", "Base stays unchanged. Review up to 100 commits after it on the current branch. Merge-preserving and root rewrites are unsupported.").text_size(crate::appearance::ui_text(12.)))
             .child(div().flex().gap_2().items_center().on_children_prepainted(field_row)
@@ -1301,11 +1643,16 @@ impl RebaseForm {
                 })).child(button("rebase-move-up", "Move up", "", false).track_focus(&move_up).debug_selector(|| "rebase-move-up".into()).disabled(self.pending || self.selected == 0).on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
                     .child(button("rebase-move-down", "Move down", "", false).track_focus(&move_down).debug_selector(|| "rebase-move-down".into()).disabled(self.pending || self.selected + 1 >= self.steps.len()).on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx)))))
                 .child(marked(&self.fit.list, div().flex().flex_col().on_children_prepainted(sequence_control).child(crate::native_accessibility::clips_children(div().on_children_prepainted(rested).id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(sequence).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
+                    .on_drag_move(cx.listener(Self::update_drag_move))
+                    .on_drop(cx.listener(Self::finish_drag_drop))
                     .on_action(cx.listener(|this, _: &MoveCommitUp, _, cx| this.move_selected(true, cx)))
                     .on_action(cx.listener(|this, _: &MoveCommitDown, _, cx| this.move_selected(false, cx)))
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         let key = event.keystroke.key.as_str();
-                        if matches!(key, "up" | "down" | "home" | "end") && !this.steps.is_empty() {
+                        if key == "escape" && cx.has_active_drag() {
+                            this.cancel_or_close(window, cx);
+                            cx.stop_propagation();
+                        } else if matches!(key, "up" | "down" | "home" | "end") && !this.steps.is_empty() {
                             this.selected = match key { "up" => this.selected.saturating_sub(1), "down" => (this.selected + 1).min(this.steps.len() - 1), "home" => 0, _ => this.steps.len() - 1 };
                             this.scroll.scroll_to_item(this.selected, ScrollStrategy::Center); cx.stop_propagation(); cx.notify();
                         } else if let Some(action) = match key { "p" => Some(RebaseAction::Pick), "r" => Some(RebaseAction::Reword), "e" => Some(RebaseAction::Edit), "s" => Some(RebaseAction::Squash), "f" => Some(RebaseAction::Fixup), "d" => Some(RebaseAction::Drop), _ => None } { this.choose(action, cx); cx.stop_propagation(); }
@@ -1317,8 +1664,8 @@ impl RebaseForm {
                 .child(div().flex().flex_col().on_children_prepainted(self.body.control(review.clone(), room)).child(refusing(button("review-interactive-rebase", "Review rebase…", "", true).track_focus(&review).debug_selector(|| "review-interactive-rebase".into()), "review-interactive-rebase", self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
             })
             .when(changed_base, |element| element.child(label("rebase-base-changed", "Base edited: load commits again to update the sequence.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .children(issue.map(|issue| label("rebase-invalid-plan", issue).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .children(self.error.as_ref().map(|error| crate::tags::error_line("rebase-form-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning)))))));
+            .children(issue.as_ref().map(|issue| label("rebase-invalid-plan", issue.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().filter(|error| issue.as_deref() != Some(error.as_str())).map(|error| crate::tags::error_line("rebase-form-error", error, Some(crate::appearance::ui_text(12.)), window, cx).text_color(rgb(p.warning)))))));
         // The body's scrollbar stands in the dialog's side padding, beside
         // the body and its ring room, as the worktree manager's and the
         // Reflog's do, and paints only while the body overflows. The body
@@ -1554,6 +1901,10 @@ pub(crate) fn form_changed(app: &GitTurtle, cx: &App) -> bool {
         form.error.is_some() || form.pending || form.closed
     })
 }
+
+#[cfg(test)]
+#[path = "interactive_rebase_drag_tests.rs"]
+mod drag_tests;
 
 #[cfg(test)]
 mod tests {
